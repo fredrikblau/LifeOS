@@ -464,6 +464,35 @@ class Settings(BaseSettings):
                     "remote_llm_input_price_per_mtok for the unset/0.0 distinction."
     )
 
+    # The one-line path to a provider: name a preset (see PROVIDER_PRESETS in
+    # api/services/llm_client.py) and set that provider's API key. The JSON
+    # registry below stays available for anything the presets don't cover, and
+    # overrides them wherever both are set.
+    llm_provider_preset: str = Field(
+        default="", alias="LIFEOS_LLM_PROVIDER",
+        description="Name of a built-in provider preset (anthropic, openai, "
+                    "deepseek, gemini, openrouter, groq, mistral, local).",
+    )
+    # Deliberately not LIFEOS_LLM_MODEL: that name is already taken by the
+    # GGUF the `lifeos-llm` systemd unit loads (see llm_model above), and two
+    # meanings behind one variable is exactly the config trap this is meant
+    # to remove.
+    llm_model_override: str = Field(
+        default="", alias="LIFEOS_LLM_DEFAULT_MODEL",
+        description="Model id for the default/specialist profiles, replacing "
+                    "the preset's choice.",
+    )
+    llm_fast_model_override: str = Field(
+        default="", alias="LIFEOS_LLM_FAST_MODEL",
+        description="Model id for the cheap 'fast' profile (classification, "
+                    "extraction, summarization).",
+    )
+    llm_reasoning_model_override: str = Field(
+        default="", alias="LIFEOS_LLM_REASONING_MODEL",
+        description="Model id for the 'reasoning' profile (planning, "
+                    "relationship analysis).",
+    )
+
     # Named provider/model registry. Credentials stay in environment variables;
     # this registry only describes how a provider is reached and which model
     # profile should be used by each operation.

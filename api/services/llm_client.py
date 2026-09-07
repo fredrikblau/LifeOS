@@ -24,6 +24,9 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# The OpenAI chat-completions path almost every compatible provider serves.
+DEFAULT_CHAT_PATH = "/v1/chat/completions"
+
 
 @dataclass(frozen=True)
 class LLMProviderConfig:
@@ -34,6 +37,106 @@ class LLMProviderConfig:
     base_url: str = ""
     api_key: str = ""
     supports_vision: bool = False
+    # Not every "OpenAI-compatible" provider serves /v1/chat/completions:
+    # Gemini's compatibility layer is at /v1beta/openai/chat/completions.
+    # Keeping the path with the provider is what lets those work without a
+    # provider-specific client.
+    chat_path: str = DEFAULT_CHAT_PATH
+
+
+@dataclass(frozen=True)
+class LLMProviderPreset:
+    """A known provider, so selecting one is a name rather than a JSON blob.
+
+    Only the endpoint shape and sensible starting models live here — never a
+    credential. The key is read at resolve time from ``api_key_env``, so it
+    stays in the environment where the rest of LifeOS keeps its secrets.
+    """
+
+    type: str
+    default_model: str
+    fast_model: str = ""
+    reasoning_model: str = ""
+    base_url: str = ""
+    api_key_env: str = ""
+    chat_path: str = DEFAULT_CHAT_PATH
+    supports_vision: bool = False
+
+    def model_for(self, profile: str) -> str:
+        if profile == "fast":
+            return self.fast_model or self.default_model
+        if profile == "reasoning":
+            return self.reasoning_model or self.default_model
+        return self.default_model
+
+
+# Model ids are starting points, not commitments: every one is replaceable
+# with LIFEOS_LLM_MODEL / _FAST_MODEL / _REASONING_MODEL without touching the
+# preset, and the full JSON registry remains available for anything these
+# don't cover.
+PROVIDER_PRESETS: dict[str, LLMProviderPreset] = {
+    "anthropic": LLMProviderPreset(
+        type="anthropic",
+        default_model="claude-sonnet-4-5",
+        fast_model="claude-haiku-4-5",
+        api_key_env="ANTHROPIC_API_KEY",
+        supports_vision=True,
+    ),
+    "openai": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="https://api.openai.com",
+        default_model="gpt-4o",
+        fast_model="gpt-4o-mini",
+        api_key_env="OPENAI_API_KEY",
+        supports_vision=True,
+    ),
+    "deepseek": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="https://api.deepseek.com",
+        default_model="deepseek-chat",
+        fast_model="deepseek-chat",
+        reasoning_model="deepseek-reasoner",
+        api_key_env="DEEPSEEK_API_KEY",
+    ),
+    "gemini": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="https://generativelanguage.googleapis.com",
+        chat_path="/v1beta/openai/chat/completions",
+        default_model="gemini-2.5-flash",
+        fast_model="gemini-2.5-flash-lite",
+        reasoning_model="gemini-2.5-pro",
+        api_key_env="GEMINI_API_KEY",
+        supports_vision=True,
+    ),
+    "openrouter": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="https://openrouter.ai/api",
+        default_model="openai/gpt-4o-mini",
+        api_key_env="OPENROUTER_API_KEY",
+    ),
+    "groq": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="https://api.groq.com/openai",
+        default_model="llama-3.3-70b-versatile",
+        api_key_env="GROQ_API_KEY",
+    ),
+    "mistral": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="https://api.mistral.ai",
+        default_model="mistral-large-latest",
+        fast_model="mistral-small-latest",
+        api_key_env="MISTRAL_API_KEY",
+    ),
+    "local": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="",  # filled from LIFEOS_LOCAL_LLM_URL at resolve time
+        default_model="local",
+    ),
+}
+
+# Profiles a preset configures. These are the names the rest of LifeOS asks
+# for by way of get_llm(profile=...).
+_PRESET_PROFILES = ("default", "fast", "specialist", "reasoning")
 
 
 @dataclass(frozen=True)
@@ -56,8 +159,78 @@ def _json_setting(value: str, setting_name: str) -> dict:
         return {}
 
 
+def _resolve_preset(
+    providers: dict[str, LLMProviderConfig],
+    models: dict[str, LLMModelConfig],
+) -> None:
+    """Apply LIFEOS_LLM_PROVIDER, if it names a preset we know.
+
+    Mutates the two maps in place: registers the provider and points every
+    profile at it. Anything explicitly configured is layered on afterwards by
+    the caller, so an explicit entry always wins over a preset.
+    """
+    raw = getattr(settings, "llm_provider_preset", "")
+    # A mocked or otherwise non-string settings object means "not configured",
+    # the same reading the JSON registry above gives a non-string value —
+    # never a provider named after its own repr.
+    if not isinstance(raw, str):
+        return
+    requested = raw.strip().lower()
+    if not requested:
+        return
+    preset = PROVIDER_PRESETS.get(requested)
+    if preset is None:
+        logger.error(
+            "LIFEOS_LLM_PROVIDER=%r is not a known provider; ignoring it and "
+            "using the legacy backend. Known providers: %s",
+            requested, ", ".join(sorted(PROVIDER_PRESETS)),
+        )
+        return
+
+    base_url = preset.base_url or getattr(settings, "local_llm_url", "") or ""
+    api_key = os.environ.get(preset.api_key_env, "") if preset.api_key_env else ""
+    if preset.api_key_env and not api_key:
+        logger.warning(
+            "LIFEOS_LLM_PROVIDER=%s is selected but %s is not set — calls to "
+            "this provider will fail until it is.",
+            requested, preset.api_key_env,
+        )
+    providers[requested] = LLMProviderConfig(
+        name=requested,
+        type=preset.type,
+        base_url=base_url,
+        api_key=api_key,
+        supports_vision=preset.supports_vision,
+        chat_path=preset.chat_path,
+    )
+
+    overrides = {
+        "default": str(getattr(settings, "llm_model_override", "") or "").strip(),
+        "fast": str(getattr(settings, "llm_fast_model_override", "") or "").strip(),
+        "reasoning": str(getattr(settings, "llm_reasoning_model_override", "") or "").strip(),
+    }
+    for profile in _PRESET_PROFILES:
+        # "specialist" follows the general model: it is the same class of work
+        # as "default", just a stronger prompt.
+        override = overrides.get("default" if profile == "specialist" else profile, "")
+        models[profile] = LLMModelConfig(
+            profile, requested, override or preset.model_for(profile)
+        )
+
+
 def get_llm_registry() -> tuple[dict[str, LLMProviderConfig], dict[str, LLMModelConfig]]:
-    """Resolve named providers and profiles, retaining legacy fallbacks."""
+    """Resolve named providers and profiles, retaining legacy fallbacks.
+
+    Three layers, each overriding the one before:
+
+    1. the built-in ``anthropic``/``local`` providers and the legacy
+       ``LIFEOS_LLM_BACKEND`` defaults;
+    2. a ``LIFEOS_LLM_PROVIDER`` preset, if one is named;
+    3. the explicit ``LIFEOS_LLM_PROVIDERS`` / ``LIFEOS_LLM_MODELS`` JSON.
+
+    So a deployment that already writes the JSON keeps exactly its current
+    behaviour, and a new one only has to name a provider.
+    """
     providers = {
         "anthropic": LLMProviderConfig(
             name="anthropic", type="anthropic", api_key=settings.anthropic_api_key,
@@ -67,6 +240,10 @@ def get_llm_registry() -> tuple[dict[str, LLMProviderConfig], dict[str, LLMModel
             name="local", type="openai_compatible", base_url=settings.local_llm_url,
         ),
     }
+    models: dict[str, LLMModelConfig] = {}
+
+    _resolve_preset(providers, models)
+
     providers_json = getattr(settings, "llm_providers_json", "")
     models_json = getattr(settings, "llm_models_json", "")
     if not isinstance(providers_json, str):
@@ -83,9 +260,9 @@ def get_llm_registry() -> tuple[dict[str, LLMProviderConfig], dict[str, LLMModel
             base_url=str(raw.get("base_url", "") or ""),
             api_key=os.environ.get(key_env, "") if key_env else str(raw.get("api_key", "") or ""),
             supports_vision=bool(raw.get("supports_vision", False)),
+            chat_path=str(raw.get("chat_path", "") or DEFAULT_CHAT_PATH),
         )
 
-    models = {}
     for name, raw in _json_setting(models_json, "LIFEOS_LLM_MODELS").items():
         if isinstance(raw, dict) and raw.get("provider") and raw.get("model"):
             models[str(name)] = LLMModelConfig(str(name), str(raw["provider"]), str(raw["model"]))
@@ -385,12 +562,17 @@ class LocalLLMClient:
         model: str = "local",
         api_key: str | None = None,
         supports_vision: bool = False,
+        chat_path: str = DEFAULT_CHAT_PATH,
     ):
         self.base_url = (base_url or getattr(settings, "local_llm_url", None) or "http://localhost:8080").rstrip("/")
         self.timeout = timeout or getattr(settings, "local_llm_timeout", 90)
         self._model = model
         self._api_key = api_key
         self.supports_vision = supports_vision
+        # Providers whose OpenAI-compatible surface is not at /v1 (Gemini)
+        # differ only in this path, so it stays a parameter rather than a
+        # subclass.
+        self.chat_path = chat_path or DEFAULT_CHAT_PATH
         self._async_client: httpx.AsyncClient | None = None
         self._sync_client: httpx.Client | None = None
 
@@ -596,7 +778,7 @@ class LocalLLMClient:
             payload["tools"] = _anthropic_tools_to_openai(tools)
         payload.update(_reasoning_control_payload(enable_thinking, reasoning_effort))
 
-        resp = self.sync_client.post("/v1/chat/completions", json=payload)
+        resp = self.sync_client.post(self.chat_path, json=payload)
         resp.raise_for_status()
         data = resp.json()
         return self._parse_response(data)
@@ -631,7 +813,7 @@ class LocalLLMClient:
             payload["tools"] = _anthropic_tools_to_openai(tools)
         payload.update(_reasoning_control_payload(enable_thinking, reasoning_effort))
 
-        resp = await self.async_client.post("/v1/chat/completions", json=payload)
+        resp = await self.async_client.post(self.chat_path, json=payload)
         resp.raise_for_status()
         data = resp.json()
         return self._parse_response(data)
@@ -701,7 +883,7 @@ class LocalLLMClient:
 
         request_timeout = httpx.Timeout(timeout or self.timeout, connect=10.0) if timeout else None
         async with self.async_client.stream(
-            "POST", "/v1/chat/completions", json=payload,
+            "POST", self.chat_path, json=payload,
             **({"timeout": request_timeout} if request_timeout else {}),
         ) as resp:
             resp.raise_for_status()
@@ -1139,11 +1321,11 @@ def get_llm(
         # LocalLLMClient appends /v1 to the request path. Accept both the
         # provider root and a conventional OpenAI base URL in configuration.
         base_url = config.base_url.rstrip("/")
-        if base_url.endswith("/v1"):
+        if config.chat_path == DEFAULT_CHAT_PATH and base_url.endswith("/v1"):
             base_url = base_url[:-3].rstrip("/")
         return OpenAICompatibleLLMClient(
             base_url=base_url, model=model_name, api_key=config.api_key,
-            supports_vision=config.supports_vision,
+            supports_vision=config.supports_vision, chat_path=config.chat_path,
         )
     raise ValueError(f"Unsupported LLM provider type {config.type!r}")
 
