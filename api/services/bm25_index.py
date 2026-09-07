@@ -16,6 +16,7 @@ Finds exact matches for names, IDs, and codes that vector search may miss.
     from api.services.bm25_index import get_bm25_index
     results = get_bm25_index().search("Alex phone", limit=20)
 """
+import re
 import sqlite3
 import logging
 from pathlib import Path
@@ -184,41 +185,50 @@ class BM25Index:
         finally:
             conn.close()
 
+    # FTS5 query syntax is a real grammar: bare terms can be read as operators
+    # (AND/OR/NOT/NEAR), and a leading "-" starts a column-exclusion filter
+    # ("-col : term"). A raw user question therefore parses as syntax, not as
+    # words — "front-end" once raised "no such column: end" in production and
+    # silently dropped keyword search for the whole query. So we never emit a
+    # bare term: every term goes out as a quoted string literal, which FTS5
+    # always treats as text to match.
+    _FTS_STOP_WORDS = frozenset({
+        'a', 'an', 'the', 'is', 'are', 'was', 'were', 'what', 'when', 'where',
+        'who', 'which', 'how', 'and', 'or', 'but', 'in', 'on', 'at', 'to',
+        'for', 'of', 'with', 'by',
+    })
+
+    @staticmethod
+    def _quote_term(term: str) -> str:
+        """Return ``term`` as an FTS5 string literal ("" escapes a quote)."""
+        return '"' + term.replace('"', '""') + '"'
+
     def _sanitize_query(self, query: str, use_or: bool = True) -> str:
         """
-        Sanitize query for FTS5 MATCH syntax.
-
-        FTS5 has special characters that cause syntax errors:
-        - Quotes, apostrophes, parentheses need removal
-        - Reserved words (AND, OR, NOT, NEAR) are handled by FTS5
+        Turn a raw query into a safe FTS5 MATCH expression.
 
         Args:
-            query: Raw query string
+            query: Raw query string.
             use_or: If True, join terms with OR (any term matches).
-                   If False, use default AND (all terms must match).
+                   If False, join with AND (all terms must match).
 
         Returns:
-            Sanitized query safe for FTS5
+            An FTS5 MATCH expression of quoted terms, or "" when the query
+            carries no searchable word.
         """
-        import re
-        # Remove characters that break FTS5 syntax
-        # Periods in filenames (like .md), question marks, etc cause issues
-        # Keep alphanumeric, spaces, hyphens, underscores
-        sanitized = re.sub(r"['\"\(\)\[\]\{\}\*\^\~\.\:\;\?\!]", " ", query)
-        # Collapse multiple spaces
-        sanitized = re.sub(r"\s+", " ", sanitized).strip()
+        terms = []
+        for raw in query.split():
+            # A term with no alphanumeric character (e.g. "---", "???") has no
+            # tokens, and an empty phrase is itself an FTS5 syntax error.
+            if not re.search(r"\w", raw, re.UNICODE):
+                continue
+            if raw.lower() in self._FTS_STOP_WORDS:
+                continue
+            terms.append(self._quote_term(raw))
 
-        if use_or and sanitized:
-            # Join terms with OR for more lenient matching
-            # Filter out common stop words that add noise
-            stop_words = {'a', 'an', 'the', 'is', 'are', 'was', 'were', 'what',
-                         'when', 'where', 'who', 'which', 'how', 'and', 'or',
-                         'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
-            terms = [t for t in sanitized.split() if t.lower() not in stop_words]
-            if terms:
-                sanitized = " OR ".join(terms)
-
-        return sanitized
+        if not terms:
+            return ""
+        return (" OR " if use_or else " AND ").join(terms)
 
     def search(
         self,

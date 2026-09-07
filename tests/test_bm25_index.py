@@ -135,3 +135,38 @@ class TestDocDates:
         bm25.clear()
         bm25.add_document("d1", "budget", "a.md")
         assert bm25.search("budget")[0]["modified_date"] == ""
+
+
+class TestQuerySyntaxRobustness:
+    """Raw user questions must never reach FTS5 as query *syntax*.
+
+    Production regression (server.log, 2026-09): the question
+    "car repair front-end key lost TCM reset status" raised
+    ``sqlite3.OperationalError: no such column: end`` — FTS5 read the
+    hyphen in ``front-end`` as its column-exclusion operator (``-col : term``)
+    and then looked for a column named ``end``. Every term therefore has to be
+    passed as a quoted string literal, not as bare query syntax.
+    """
+
+    def test_hyphenated_term_does_not_raise(self, bm25):
+        bm25.add_document("d1", "the front-end key was lost", "a.md")
+        results = bm25.search("car repair front-end key lost TCM reset status")
+        assert [r["doc_id"] for r in results] == ["d1"]
+
+    def test_fts5_operator_words_are_treated_as_terms(self, bm25):
+        bm25.add_document("d1", "notes about the NEAR miss and the OR gate", "a.md")
+        # AND/OR/NOT/NEAR are FTS5 keywords; bare, they are a syntax error.
+        assert bm25.search("NEAR OR NOT AND")[0]["doc_id"] == "d1"
+
+    def test_column_name_term_does_not_become_a_column_filter(self, bm25):
+        bm25.add_document("d1", "the content of this note mentions people", "a.md")
+        # "content" and "people" are real FTS5 column names here.
+        assert bm25.search("content people")[0]["doc_id"] == "d1"
+
+    def test_embedded_quote_does_not_break_the_query(self, bm25):
+        bm25.add_document("d1", "quarterly budget review", "a.md")
+        assert bm25.search('budget " review')[0]["doc_id"] == "d1"
+
+    def test_punctuation_only_query_returns_empty(self, bm25):
+        bm25.add_document("d1", "anything", "a.md")
+        assert bm25.search("--- ??? ...") == []
