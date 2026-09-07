@@ -14,10 +14,12 @@ import logging
 import os
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from api.services.subject_key import status_subject
 
 logger = logging.getLogger(__name__)
 
@@ -165,10 +167,15 @@ class Memory:
     updated_at: datetime
     is_active: bool = True
     source: dict | None = None
+    # Set when a newer snapshot of the same subject retired this one. The
+    # record is kept rather than deleted — the history of what was believed,
+    # and when, is part of the provenance.
+    superseded_by: str | None = None
+    superseded_at: str | None = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
-        return {
+        data = {
             "id": self.id,
             "content": self.content,
             "category": self.category,
@@ -178,6 +185,12 @@ class Memory:
             "is_active": self.is_active,
             "source": self.source,
         }
+        # Only written when it happened, so the human-readable file stays
+        # readable for the overwhelming majority of memories.
+        if self.superseded_by:
+            data["superseded_by"] = self.superseded_by
+            data["superseded_at"] = self.superseded_at
+        return data
 
 
 @dataclass
@@ -239,9 +252,14 @@ class MemoryStore:
             try:
                 with open(self.file_path, 'r') as f:
                     data = json.load(f)
-                    for mem_data in data.get("memories", []):
-                        memory = self._dict_to_memory(mem_data)
-                        self._memories[memory.id] = memory
+                    # "superseded" holds snapshots retired by a newer reading
+                    # of the same subject. They are kept out of "memories" so
+                    # the human-editable list stays the current picture, and
+                    # loaded here so the trail survives a restart.
+                    for key in ("memories", "superseded"):
+                        for mem_data in data.get(key, []):
+                            memory = self._dict_to_memory(mem_data)
+                            self._memories[memory.id] = memory
                 logger.info(f"Loaded {len(self._memories)} memories from {self.file_path}")
             except (json.JSONDecodeError, KeyError) as e:
                 logger.warning(f"Error loading memories: {e}. Starting fresh.")
@@ -251,6 +269,15 @@ class MemoryStore:
 
     def _save(self):
         """Save memories to JSON file."""
+        # A memory the user deleted is genuinely dropped from disk — "forget
+        # that" has to mean it. A memory *superseded* by a newer reading of
+        # the same subject is not a deletion: nobody asked for it to go, it
+        # just stopped being current, so it is kept in its own list where it
+        # cannot be recalled but can still be audited.
+        superseded = [
+            mem.to_dict() for mem in self._memories.values()
+            if not mem.is_active and mem.superseded_by
+        ]
         data = {
             "description": "LifeOS Persistent Memories - Edit this file to add/modify memories",
             "last_updated": datetime.now().isoformat(),
@@ -259,6 +286,8 @@ class MemoryStore:
                 if mem.is_active
             ]
         }
+        if superseded:
+            data["superseded"] = superseded
         with open(self.file_path, 'w') as f:
             json.dump(data, f, indent=2, default=str)
 
@@ -281,6 +310,8 @@ class MemoryStore:
             updated_at=updated_at or datetime.now(),
             is_active=data.get("is_active", True),
             source=data.get("source"),
+            superseded_by=data.get("superseded_by"),
+            superseded_at=data.get("superseded_at"),
         )
 
     def create_memory(self, content: str, category: str = None, source: dict | None = None) -> Memory:
@@ -313,23 +344,67 @@ class MemoryStore:
         )
 
         self._memories[memory.id] = memory
+        self._supersede_older_snapshots(memory)
         self._save()
 
         logger.info(f"Created memory: {memory.id} - {memory.category}")
         return memory
 
-    def get_memory(self, memory_id: str) -> Optional[Memory]:
+    def _supersede_older_snapshots(self, memory: Memory) -> list[str]:
+        """Retire earlier active snapshots of the same subject as ``memory``.
+
+        Status updates are not independent facts — "Car repair status (Aug 23)"
+        and "Car repair status (Aug 28)" are two readings of one thing, and
+        keeping both recallable is how the assistant ends up asserting a
+        corrected claim back to the user days later. Only the newest reading
+        stays active; the rest are kept on disk with a link forward, so the
+        history of what was believed is recoverable and nothing is deleted.
+
+        Plain statements have no subject (see status_subject) and therefore
+        never supersede and are never superseded.
+        """
+        subject = status_subject(memory.content)
+        if not subject:
+            return []
+
+        now = datetime.now()
+        retired = []
+        for existing in list(self._memories.values()):
+            if existing.id == memory.id or not existing.is_active:
+                continue
+            if status_subject(existing.content) != subject:
+                continue
+            self._memories[existing.id] = replace(
+                existing,
+                is_active=False,
+                updated_at=now,
+                superseded_by=memory.id,
+                superseded_at=now.isoformat(),
+            )
+            retired.append(existing.id)
+
+        if retired:
+            logger.info(
+                "Memory %s supersedes %d earlier snapshot(s) of %r",
+                memory.id, len(retired), subject,
+            )
+        return retired
+
+    def get_memory(self, memory_id: str, include_inactive: bool = False) -> Optional[Memory]:
         """
         Get a memory by ID.
 
         Args:
             memory_id: Memory ID
+            include_inactive: Also return a deleted or superseded memory.
+                Off by default so ordinary recall never resurfaces a retired
+                snapshot; on for the callers whose job is the audit trail.
 
         Returns:
             Memory object or None if not found
         """
         memory = self._memories.get(memory_id)
-        if memory and memory.is_active:
+        if memory and (memory.is_active or include_inactive):
             return memory
         return None
 

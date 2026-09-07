@@ -962,3 +962,107 @@ class TestMemoryWorkflow:
         assert len(facts) >= 1
         assert len(preferences) >= 1
         assert len(reminders) >= 1
+
+
+class TestStatusSupersession:
+    """A newer snapshot of a subject retires the older one.
+
+    Fifteen "Car repair status (as of ...)" memories were active at once on a
+    live deployment. Retrieval surfaced an Aug-23 snapshot claiming the car's
+    electronic lock was cleared, days after the user had explicitly corrected
+    that — and the assistant repeated it back as current fact. Only the newest
+    snapshot of a subject should be recallable; the older ones stay on disk,
+    deactivated and linked, because provenance is never thrown away.
+    """
+
+    def test_a_newer_snapshot_retires_the_older_one(self, store):
+        old = store.create_memory("Car repair status (Aug 23): electronic lock is gone.")
+        new = store.create_memory("Car repair status (as of Aug 28): the key is still missing.")
+
+        assert new.id != old.id
+        assert store.get_memory(old.id, include_inactive=True).is_active is False
+        assert store.get_memory(new.id).is_active is True
+
+    def test_a_retired_memory_is_hidden_from_ordinary_reads(self, store):
+        old = store.create_memory("Car repair status (Aug 23): electronic lock is gone.")
+        store.create_memory("Car repair status (as of Aug 28): the key is still missing.")
+
+        assert store.get_memory(old.id) is None
+        assert store.get_memory(old.id, include_inactive=True) is not None
+
+    def test_supersession_records_the_link(self, store):
+        old = store.create_memory("Car repair status (Aug 23): electronic lock is gone.")
+        new = store.create_memory("Car repair status (as of Aug 28): the key is still missing.")
+
+        retired = store.get_memory(old.id, include_inactive=True)
+        assert retired.superseded_by == new.id
+        assert retired.superseded_at is not None
+        assert retired.content == "Car repair status (Aug 23): electronic lock is gone."
+
+    def test_a_superseded_memory_is_not_recalled(self, store):
+        store.create_memory("Car repair status (Aug 23): electronic lock is gone.")
+        store.create_memory("Car repair status (as of Aug 28): the key is still missing.")
+
+        recalled = " ".join(m.content for m in store.search_memories("car repair status"))
+        assert "electronic lock" not in recalled
+        assert "key is still missing" in recalled
+
+    def test_every_older_snapshot_is_retired_not_just_the_last(self, store):
+        first = store.create_memory("Car repair status (Aug 22): hub sent to the turner.")
+        second = store.create_memory("Car repair status (Aug 23): ball joint fixed.")
+        third = store.create_memory("Car repair status (Aug 24): brake calipers replaced.")
+
+        assert store.get_memory(first.id, include_inactive=True).is_active is False
+        assert store.get_memory(second.id, include_inactive=True).is_active is False
+        assert store.get_memory(third.id).is_active is True
+
+    def test_a_different_subject_is_left_alone(self, store):
+        other = store.create_memory("Car electrical issue (Aug 23): the battery is dead.")
+        store.create_memory("Car repair status (Aug 24): brake calipers replaced.")
+
+        assert store.get_memory(other.id).is_active is True
+
+    def test_a_plain_statement_supersedes_nothing(self, store):
+        """Standalone facts accumulate; only running status collapses."""
+        first = store.create_memory("My car key is lost.")
+        store.create_memory("My car is red.")
+
+        assert store.get_memory(first.id).is_active is True
+
+    def test_a_plain_statement_is_not_retired_by_a_status_line(self, store):
+        fact = store.create_memory("Amir's car flipped over in an accident in 2024.")
+        store.create_memory("Car repair status (Aug 24): brake calipers replaced.")
+
+        assert store.get_memory(fact.id).is_active is True
+
+    def test_supersession_survives_a_reload(self, store, tmp_path):
+        old = store.create_memory("Car repair status (Aug 23): electronic lock is gone.")
+        new = store.create_memory("Car repair status (as of Aug 28): the key is still missing.")
+
+        from api.services.memory_store import MemoryStore
+        reloaded = MemoryStore(file_path=str(store.file_path))
+
+        assert reloaded.get_memory(old.id, include_inactive=True).is_active is False
+        assert reloaded.get_memory(old.id, include_inactive=True).superseded_by == new.id
+        assert reloaded.get_memory(new.id).is_active is True
+
+    def test_a_deleted_memory_is_still_really_deleted(self, store):
+        """Supersession keeps history; deletion does not. "Forget that" has to
+        mean the record leaves the file."""
+        import json
+
+        doomed = store.create_memory("Something the user asked me to forget.")
+        store.delete_memory(doomed.id)
+
+        on_disk = json.loads(store.file_path.read_text())
+        assert doomed.id not in json.dumps(on_disk)
+
+    def test_retired_snapshots_do_not_clutter_the_editable_list(self, store):
+        import json
+
+        old = store.create_memory("Car repair status (Aug 23): electronic lock is gone.")
+        new = store.create_memory("Car repair status (as of Aug 28): the key is still missing.")
+
+        on_disk = json.loads(store.file_path.read_text())
+        assert [m["id"] for m in on_disk["memories"]] == [new.id]
+        assert [m["id"] for m in on_disk["superseded"]] == [old.id]
