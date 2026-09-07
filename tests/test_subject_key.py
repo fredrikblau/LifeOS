@@ -78,7 +78,7 @@ class TestStatusSubject:
     def test_a_leading_memory_label_is_not_the_subject(self):
         """The model habitually prefixes "Memory:"; three unrelated memories
         must not all become the same subject."""
-        a = status_subject("Memory: Amir's car flipped over in 2024.")
+        a = status_subject("Memory: the blue hatchback was written off in 2019.")
         b = status_subject("Memory: Agreement made with the owner of the cafe Qaf.")
         assert a != b or a is None
 
@@ -107,7 +107,7 @@ class TestStatusSubject:
 
     def test_plain_statements_never_supersede_anything(self):
         assert status_subject("My car key is lost") is None
-        assert status_subject("Amir wants to build an AI product for cafes.") is None
+        assert status_subject("Sam wants to build a bakery ordering app.") is None
 
     def test_generic_labels_are_not_subjects(self):
         assert status_subject("Status: fine") is None

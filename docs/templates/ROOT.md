@@ -7,7 +7,7 @@ retain their original source and confidence.
 ## Current direction
 
 - Current state: capture and review meaningful life information through Telegram.
-- Ideal state: a private, provider-independent cognitive layer that helps Amir
+- Ideal state: a private, provider-independent cognitive layer that helps me
   remember, understand, prioritize, and act.
 - Current focus: reliable capture, projects, commitments, relationships, and
   the next concrete action.

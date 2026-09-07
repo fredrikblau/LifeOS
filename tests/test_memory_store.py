@@ -1030,7 +1030,7 @@ class TestStatusSupersession:
         assert store.get_memory(first.id).is_active is True
 
     def test_a_plain_statement_is_not_retired_by_a_status_line(self, store):
-        fact = store.create_memory("Amir's car flipped over in an accident in 2024.")
+        fact = store.create_memory("The blue hatchback was written off in 2019.")
         store.create_memory("Car repair status (Aug 24): brake calipers replaced.")
 
         assert store.get_memory(fact.id).is_active is True
@@ -1066,3 +1066,57 @@ class TestStatusSupersession:
         on_disk = json.loads(store.file_path.read_text())
         assert [m["id"] for m in on_disk["memories"]] == [new.id]
         assert [m["id"] for m in on_disk["superseded"]] == [old.id]
+
+
+class TestCategorisation:
+    """Categories decide how a memory is filtered and surfaced, so a category
+    that means nothing is worse than none.
+
+    On a live store, 10 of 21 memories were filed as `people` by one pattern —
+    `[A-Z][a-z]+\\s+(prefers?|likes?|wants?|needs?|is|has)`. It is written to
+    spot a proper noun, but `categorize_memory` matches with re.IGNORECASE, so
+    `[A-Z][a-z]+` matches any word at all and the pattern degrades to "any word
+    followed by 'is'". "My car key is lost" was filed under people.
+    """
+
+    def test_a_proper_noun_statement_is_about_people(self):
+        from api.services.memory_store import categorize_memory
+        assert categorize_memory("Sarah prefers morning meetings") == "people"
+
+    def test_a_lowercase_sentence_is_not_a_person(self):
+        from api.services.memory_store import categorize_memory
+        assert categorize_memory("My car key is lost") != "people"
+
+    def test_a_status_line_is_not_a_person(self):
+        from api.services.memory_store import categorize_memory
+        assert categorize_memory(
+            "Car repair status: the front-end issue remains but is acceptable"
+        ) != "people"
+
+    def test_the_users_own_name_is_not_hardcoded(self, monkeypatch):
+        """The goal/project patterns carried one operator's literal first
+        name: personal data in shipped code, and silently dead for everyone
+        else. The table must follow settings.user_name instead."""
+        from config.settings import settings
+        from api.services import memory_store
+
+        monkeypatch.setattr(settings, "user_name", "Wilhelmina")
+        memory_store.reset_category_patterns()
+        assert "Wilhelmina" in repr(memory_store.CATEGORY_PATTERNS)
+
+        monkeypatch.setattr(settings, "user_name", "Bartholomew")
+        memory_store.reset_category_patterns()
+        table = repr(memory_store.CATEGORY_PATTERNS)
+        assert "Bartholomew" in table and "Wilhelmina" not in table
+
+    def test_a_third_person_goal_is_still_a_goal(self, monkeypatch):
+        from config.settings import settings
+        monkeypatch.setattr(settings, "user_name", "Dana")
+        from api.services import memory_store
+        memory_store.reset_category_patterns()
+
+        assert memory_store.categorize_memory("Dana wants to learn Japanese") == "goals"
+
+    def test_a_first_person_goal_is_still_a_goal(self):
+        from api.services.memory_store import categorize_memory
+        assert categorize_memory("I want to learn Japanese") == "goals"

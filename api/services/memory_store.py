@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from api.services.subject_key import status_subject
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -43,48 +44,72 @@ MEMORY_SEMANTIC_NEAR_MISS_MARGIN = 0.05
 # MemorySearchStats so a miss beyond it is never presented as absence.
 MEMORY_SEARCH_CORPUS_LIMIT = 1000
 
-# Memory categories and their trigger patterns
-CATEGORY_PATTERNS = {
-    "ideas": [
-        r"\b(?:maybe|perhaps|idea|i\s+think\s+i\s+might|i\s+might|i\s+may|i(?:'m|\s+am)\s+considering)\b",
-    ],
-    "goals": [
-        r"\b(?:I|Amir)\s+(?:want|wants|plan|plans|hope|hopes|aim|aims|intend|intends)\s+to\b",
-        r"\btop\s+priorit(?:y|ies)\b",
-        r"\b(?:my\s+)?(?:goal|vision)\s+(?:is|:)",
-    ],
-    "people": [
-        r"\b(he|she|they)\s+(prefers?|likes?|wants?)",
-        r"\b[A-Z][a-z]+\s+(prefers?|likes?|wants?|needs?|is|has)",
-        r"(meeting|discussion|talk|call)\s+with\s+[A-Z]",
-        r"\b(CEO|CTO|manager|boss|colleague|friend|family)\b",
-    ],
-    "preferences": [
-        r"\bI\s+(prefer|like|want|need)",
-        r"\bmy\s+(preference|style|habit)",
-        r"(prefer|like).*\s+(over|instead|rather)",
-    ],
-    "decisions": [
-        r"\b(we|I)\s+(decided|chose|agreed|committed)",
-        r"decision\s*(is|was|to)",
-        r"(postpone|delay|launch|start|cancel)",
-    ],
-    "facts": [
-        r"\$[\d,]+[kmb]?",  # Money amounts
-        r"\d+%",  # Percentages
-        r"(budget|revenue|cost|price)\s+is",
-        r"(deadline|due|launch)\s+(is|on)",
-    ],
-    "reminders": [
-        r"\b(remember|don't forget|make sure)",
-        r"\bfollow.?up\b",
-        r"\b(todo|to.?do)\b",
-    ],
-    "projects": [
-        r"\b(?:I|Amir)\s+(?:am\s+)?(?:building|developing|working\s+on)\b",
-        r"\b(?:my|a)\s+(?:project|product)\s+(?:is|to)\b",
-    ],
-}
+# Memory categories and their trigger patterns.
+#
+# Matching is case-insensitive (a memory is prose, not a form), so a pattern
+# that genuinely depends on capitalisation — a proper noun — must say so with
+# an inline `(?-i:...)`. Without that, `[A-Z][a-z]+` matches any word at all
+# and "any capitalised word followed by 'is'" degrades into "any word followed
+# by 'is'". That one pattern filed 10 of 21 memories on a live store as
+# `people`, including "My car key is lost".
+#
+# The operator's own name is interpolated rather than hardcoded: it appeared
+# here as a literal, which is personal data in shipped code and silently dead
+# for everyone else.
+def _build_category_patterns(user_name: str) -> dict[str, list[str]]:
+    me = re.escape(user_name.split()[0]) if user_name and user_name.strip() else ""
+    subject = f"(?:I|{me})" if me else "(?:I)"
+    return {
+        "ideas": [
+            r"\b(?:maybe|perhaps|idea|i\s+think\s+i\s+might|i\s+might|i\s+may|i(?:'m|\s+am)\s+considering)\b",
+        ],
+        "goals": [
+            rf"\b{subject}\s+(?:want|wants|plan|plans|hope|hopes|aim|aims|intend|intends)\s+to\b",
+            r"\btop\s+priorit(?:y|ies)\b",
+            r"\b(?:my\s+)?(?:goal|vision)\s+(?:is|:)",
+        ],
+        "people": [
+            r"\b(he|she|they)\s+(prefers?|likes?|wants?)",
+            r"(?-i:\b[A-Z][a-z]+)\s+(prefers?|likes?|wants?|needs?|is|has)",
+            r"(meeting|discussion|talk|call)\s+with\s+(?-i:[A-Z])",
+            r"\b(CEO|CTO|manager|boss|colleague|friend|family)\b",
+        ],
+        "preferences": [
+            r"\bI\s+(prefer|like|want|need)",
+            r"\bmy\s+(preference|style|habit)",
+            r"(prefer|like).*\s+(over|instead|rather)",
+        ],
+        "decisions": [
+            r"\b(we|I)\s+(decided|chose|agreed|committed)",
+            r"decision\s*(is|was|to)",
+            r"(postpone|delay|launch|start|cancel)",
+        ],
+        "facts": [
+            r"\$[\d,]+[kmb]?",  # Money amounts
+            r"\d+%",  # Percentages
+            r"(budget|revenue|cost|price)\s+is",
+            r"(deadline|due|launch)\s+(is|on)",
+        ],
+        "reminders": [
+            r"\b(remember|don't forget|make sure)",
+            r"\bfollow.?up\b",
+            r"\b(todo|to.?do)\b",
+        ],
+        "projects": [
+            rf"\b{subject}\s+(?:am\s+)?(?:building|developing|working\s+on)\b",
+            r"\b(?:my|a)\s+(?:project|product)\s+(?:is|to)\b",
+        ],
+    }
+
+
+CATEGORY_PATTERNS = _build_category_patterns(getattr(settings, "user_name", ""))
+
+
+def reset_category_patterns() -> None:
+    """Rebuild the table after ``settings.user_name`` changes (tests)."""
+    global CATEGORY_PATTERNS
+    CATEGORY_PATTERNS = _build_category_patterns(getattr(settings, "user_name", ""))
+
 
 # Words to exclude from keywords
 STOPWORDS = {
