@@ -244,6 +244,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to start agent_viz prefetch loop: {e}")
 
+    # Startup: warm the embedding model so the first message after a deploy
+    # doesn't pay ~6s for the lazy load (memory_inject p90 across 60 real
+    # turns). Background and best-effort — never blocks or fails startup.
+    try:
+        from api.services import embedding_warmup
+        embedding_warmup.warm()
+    except Exception as e:
+        logger.error(f"Failed to start embedding warmup: {e}")
+
     # Hint for new users who haven't set their person ID yet
     if not settings.my_person_id and settings.user_name and settings.user_name != "User":
         logger.info(
