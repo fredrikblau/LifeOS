@@ -17,7 +17,35 @@ BACKUP_DIR="$PROJECT_DIR/data/backups"
 DATE=$(date +%Y-%m-%d)
 TODAY_DIR="$BACKUP_DIR/$DATE"
 KEEP_DAYS=7
-SQLITE="sqlite3"
+# The `sqlite3` CLI is not a LifeOS dependency and is absent on a minimal
+# server install — which used to mean every database "backed up" as a FAIL
+# line while the run still looked like it had done something. Python's own
+# sqlite3 module is always present (the app is Python), and its Connection
+# .backup() is the same online-backup API the CLI's .backup uses, so fall
+# back to it rather than requiring a package nobody documented.
+SQLITE_BIN="$(command -v sqlite3 || true)"
+PYTHON_BIN="${LIFEOS_VENV:-$HOME/.venvs/lifeos}/bin/python"
+[ -x "$PYTHON_BIN" ] || PYTHON_BIN="$(command -v python3 || true)"
+
+# sqlite_backup SRC DST — consistent online copy of a live database.
+sqlite_backup() {
+    local src="$1" dst="$2"
+    if [ -n "$SQLITE_BIN" ]; then
+        "$SQLITE_BIN" "$src" ".backup '$dst'"
+        return $?
+    fi
+    if [ -n "$PYTHON_BIN" ]; then
+        "$PYTHON_BIN" - "$src" "$dst" <<'PY'
+import sqlite3, sys
+src, dst = sys.argv[1], sys.argv[2]
+with sqlite3.connect(f"file:{src}?mode=ro", uri=True) as source, sqlite3.connect(dst) as target:
+    source.backup(target)
+PY
+        return $?
+    fi
+    echo "neither the sqlite3 CLI nor a python3 interpreter is available" >&2
+    return 1
+}
 LOG_FILE="$PROJECT_DIR/logs/backup.log"
 
 log() {
@@ -56,7 +84,7 @@ backup_db() {
     fi
 
     local dst="$TODAY_DIR/$name"
-    if $SQLITE "$src" ".backup '$dst'" 2>>"$LOG_FILE"; then
+    if sqlite_backup "$src" "$dst" 2>>"$LOG_FILE"; then
         local dst_size
         if [[ "$(uname)" == "Darwin" ]]; then
             dst_size=$(stat -f%z "$dst" 2>/dev/null || echo "?")
