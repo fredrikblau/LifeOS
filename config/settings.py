@@ -234,6 +234,16 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, alias="LIFEOS_PORT")
     host: str = Field(default="0.0.0.0", alias="LIFEOS_HOST")
 
+    # Optional shared secret guarding the whole API (see
+    # api/middleware/access_token.py). Empty (the default) leaves the API
+    # open, which is correct on a private tailnet and dangerous on a public
+    # VPS — set it whenever the port can be reached from the internet.
+    api_token: str = Field(
+        default="", alias="LIFEOS_API_TOKEN",
+        description="Shared secret required from non-loopback API callers. "
+                    "Empty disables the check entirely.",
+    )
+
     # Host guard (#506): the ONE machine allowed to run this API server. A
     # second live server elsewhere writes to its own SQLite/Chroma copy that
     # silently diverges from the real one, so clients pointed at the wrong

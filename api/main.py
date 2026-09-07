@@ -44,6 +44,8 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from api.middleware.access_token import AccessTokenMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
@@ -112,6 +114,29 @@ def check_server_host_guard() -> None:
     )
 
 
+def warn_if_api_is_publicly_reachable() -> None:
+    """Say so loudly when the API listens beyond localhost with no token.
+
+    LifeOS holds a complete personal record and has no login of its own. On a
+    private tailnet a wide bind address is fine; on a VPS with a public IP it
+    means anyone who finds the port can read everything. A 2026-09 audit of a
+    real deployment found exactly that — internet hosts had already pulled
+    ``/api/memories``. Nothing here changes behaviour: it only makes the
+    exposure visible at startup instead of in the access log months later.
+    """
+    if settings.api_token:
+        return
+    if settings.host in ("127.0.0.1", "::1", "localhost"):
+        return
+    logger.warning(
+        "SECURITY: the API is bound to %s with no LIFEOS_API_TOKEN set, so "
+        "anyone who can reach port %s can read your memories, people and "
+        "conversations. Set LIFEOS_API_TOKEN, bind LIFEOS_HOST to 127.0.0.1, "
+        "or firewall the port.",
+        settings.host, settings.port,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - startup and shutdown."""
@@ -121,6 +146,8 @@ async def lifespan(app: FastAPI):
     # Deliberately not wrapped in try/except — unlike the best-effort blocks
     # below, this must actually stop startup on a mismatch.
     check_server_host_guard()
+
+    warn_if_api_is_publicly_reachable()
 
     # Startup: Recover any incomplete merge operations
     try:
@@ -299,6 +326,16 @@ _cors_origins = [
 ]
 if settings.tailnet_https_url:
     _cors_origins.append(settings.tailnet_https_url.rstrip("/"))
+
+# Optional shared-secret gate (#security). Inert unless LIFEOS_API_TOKEN is
+# set, so a private tailnet deployment is unchanged; set it and non-loopback
+# callers must present the token. /health stays open so out-of-band watchdogs
+# can still tell "down" from "locked".
+app.add_middleware(
+    AccessTokenMiddleware,
+    token=settings.api_token,
+    exempt_paths=("/health",),
+)
 
 app.add_middleware(
     CORSMiddleware,
