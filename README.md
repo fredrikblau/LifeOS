@@ -1,5 +1,7 @@
 # LifeOS
 
+[![tests](https://github.com/fredrikblau/LifeOS/actions/workflows/tests.yml/badge.svg)](https://github.com/fredrikblau/LifeOS/actions/workflows/tests.yml)
+
 **Your personal operating system, built from the digital exhaust of your life.**
 
 > **This is a fork.** LifeOS was created by [@nbramia](https://github.com/nbramia)
