@@ -139,6 +139,14 @@ reviews, not ranked — untouched.
   supersession leaves a duplicate; an over-eager one hides a fact.
 - **Filler words are a fixed list.** A project genuinely named "The Project"
   has an empty key and never matches, falling back to exact-name behaviour.
+- **A newer snapshot is assumed to be a superset of the older one, and is not
+  always.** In the real corpus, the Sep-6 car-repair snapshot silently dropped
+  the lost-key blocker the Aug-31 one carried; retiring the older one therefore
+  retires that detail with it. Two things limit the damage here — a standalone
+  fact ("My car key is lost") has no subject and is never retired, and any
+  snapshot the model phrases without a "<subject>:" prefix also survives — but
+  the assumption is real, and it is the reason supersession deactivates rather
+  than deletes.
 - **Superseded memories still occupy the file**, and a subject updated daily
   for a year keeps a year of retired snapshots. Pruning them is deferred until
   there is a reason to.
