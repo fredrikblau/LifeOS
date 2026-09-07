@@ -29,6 +29,8 @@ Each section corresponds roughly to a section in [`config/settings.py`](../../co
 | `LIFEOS_BACKUP_KEEP` | int | `2` | Nightly snapshots retained per database. Older ones are pruned only after a fully successful sync whose newest snapshot passes an integrity check, so repeated failures cannot rotate away the last good copy. |
 | `TAILNET_HTTPS_URL` | str | — | Your machine's Tailscale HTTPS URL (no port), e.g. `https://<your-machine>.<tailnet>.ts.net`. Used by `scripts/setup-tailscale.sh` status output, and returned as `secure_url` by `GET /api/chat/config` so `/chat` can offer a one-tap link here when the mic is blocked by an insecure context. **Open `/chat` on this URL for voice** — the mic requires HTTPS. |
 | `LIFEOS_VOICE_GATEWAY_URL` | str | `http://127.0.0.1:9788` | whisper-relay base URL; LifeOS reverse-proxies `/api/voice/*` here (ADR-016). |
+| `LIFEOS_TELEGRAM_WHISPER_LANGUAGE` | str | — | ISO code (e.g. `fa`, `de`) for Telegram voice notes. Unset auto-detects, which is unreliable on short clips — and a wrong guess yields a fluent transcript in the wrong language that then gets saved as a memory. Set it whenever your voice notes are reliably one language. |
+| `LIFEOS_TELEGRAM_WHISPER_MODEL` | str | `base` | faster-whisper model size. `small` is markedly better on non-English speech for roughly 500MB more RAM. |
 
 > **On a public IP, do both.** LifeOS holds a complete personal record and,
 > with no token set, serves all of it to anyone who can reach the port. Set
