@@ -14,6 +14,25 @@ Register with Claude Code:
 import json
 import sys
 import httpx
+
+# `anthropic` depends on httpx2, so a LifeOS install has BOTH httpx and httpx2
+# on the path — and starlette's TestClient binds to httpx2. Its
+# HTTPStatusError is a different class from httpx's, so `except
+# httpx.HTTPStatusError` silently misses it and a clean 409 ("this draft was
+# created this turn, confirm before sending") was reported as an unclassified
+# "Unexpected error". Catch whichever library actually raised.
+try:  # pragma: no cover - depends on which httpx generations are installed
+    import httpx2 as _httpx2
+
+    _HTTP_STATUS_ERRORS: tuple[type[Exception], ...] = (
+        httpx.HTTPStatusError, _httpx2.HTTPStatusError,
+    )
+    _HTTP_REQUEST_ERRORS: tuple[type[Exception], ...] = (
+        httpx.RequestError, _httpx2.RequestError,
+    )
+except ImportError:  # pragma: no cover
+    _HTTP_STATUS_ERRORS = (httpx.HTTPStatusError,)
+    _HTTP_REQUEST_ERRORS = (httpx.RequestError,)
 import logging
 import os
 from pathlib import Path
@@ -1135,9 +1154,9 @@ class LifeOSMCPServer:
             resp = self.client.post(url)
             resp.raise_for_status()
             return resp.json()
-        except httpx.HTTPStatusError as e:
+        except _HTTP_STATUS_ERRORS as e:
             return {"error": f"API error {e.response.status_code}: {e.response.text[:200]}"}
-        except httpx.RequestError as e:
+        except _HTTP_REQUEST_ERRORS as e:
             return {"error": f"Request failed: {e}"}
 
     @staticmethod
@@ -1242,9 +1261,9 @@ class LifeOSMCPServer:
                 self._result_cache.put(session_id, tool_name, cache_key_args, result)
 
             return result
-        except httpx.HTTPStatusError as e:
+        except _HTTP_STATUS_ERRORS as e:
             return {"error": f"API error {e.response.status_code}: {e.response.text[:200]}"}
-        except httpx.RequestError as e:
+        except _HTTP_REQUEST_ERRORS as e:
             return {"error": f"Request failed: {e}"}
         except Exception as e:
             return {"error": f"Unexpected error: {e}"}

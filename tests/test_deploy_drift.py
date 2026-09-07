@@ -72,7 +72,11 @@ def _make_repo_with_post_commit(tmp_path: Path) -> Path:
     # No-op server.sh — the hook only checks `-x` and backgrounds a call to it.
     _stub_bin(scripts, "server.sh", "exit 0\n")
 
-    _git(repo, "init", "-q")
+    # -b main: these tests check out "main" by name, and git's default
+    # branch is "master" unless init.defaultBranch says otherwise — so
+    # without this the fixture is green only on machines that happen to
+    # have configured it (it fails on a stock GitHub runner).
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@t.t")
     _git(repo, "config", "user.name", "t")
     (repo / "README.md").write_text("base\n")
@@ -246,7 +250,11 @@ def _make_repo_for_drift(tmp_path: Path) -> Path:
     (repo / "scripts").mkdir(parents=True)
     (repo / "scripts" / "auto-deploy.sh").write_text(AUTO_DEPLOY.read_text(), encoding="utf-8")
     (repo / "scripts" / "auto-deploy.sh").chmod(0o755)
-    _git(repo, "init", "-q")
+    # -b main: these tests check out "main" by name, and git's default
+    # branch is "master" unless init.defaultBranch says otherwise — so
+    # without this the fixture is green only on machines that happen to
+    # have configured it (it fails on a stock GitHub runner).
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@t.t")
     _git(repo, "config", "user.name", "t")
     return repo
@@ -472,7 +480,11 @@ def _make_policy_repo(tmp_path: Path) -> tuple[Path, Path, int]:
 
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(repo, "init", "-q")
+    # -b main: these tests check out "main" by name, and git's default
+    # branch is "master" unless init.defaultBranch says otherwise — so
+    # without this the fixture is green only on machines that happen to
+    # have configured it (it fails on a stock GitHub runner).
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "checkout", "-qb", "main")
     _git(repo, "config", "user.email", "t@t.t")
     _git(repo, "config", "user.name", "t")

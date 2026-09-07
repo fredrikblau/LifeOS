@@ -153,13 +153,26 @@ class TestTheProbesActuallyRun:
     nothing. These call the real ones."""
 
     @pytest.mark.parametrize("probe", [
-        "_vault_is_empty", "_crm_is_empty", "_google_is_unconfigured",
+        "_crm_is_empty", "_google_is_unconfigured",
         "_slack_is_unconfigured", "_monarch_is_unconfigured",
     ])
     def test_probe_returns_a_bool_without_raising(self, probe):
-        if probe == "_vault_is_empty":
-            # Only this probe reaches ChromaDB, which a lint/unit-only
-            # environment need not have installed.
-            pytest.importorskip("chromadb")
-        result = getattr(ta, probe)()
-        assert isinstance(result, bool)
+        assert isinstance(getattr(ta, probe)(), bool)
+
+    def test_the_vault_probe_is_answerable_or_fails_open(self):
+        """_vault_is_empty is the one probe that reaches a *server*, so on a
+        machine with no ChromaDB running it raises rather than answering —
+        which is the fail-open path, not a broken probe. Both outcomes are
+        correct; what must hold either way is that the tool survives."""
+        try:
+            answered = ta._vault_is_empty()
+        except Exception:
+            answered = None
+        ta.reset_cache()
+
+        available, withheld = ta.filter_tools([{"name": "search_vault"}])
+        if answered is True:
+            assert withheld and "search_vault" not in {t["name"] for t in available}
+        else:
+            # Unreachable, or reachable and non-empty: keep the tool.
+            assert {t["name"] for t in available} == {"search_vault"}
