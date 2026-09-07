@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
+from api.services.subject_key import subject_key
+
 
 _LOCK = RLock()
 
@@ -53,6 +55,27 @@ def _normalise(value: str) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
+def _find(projects: list[dict], name: str) -> dict | None:
+    """Locate the project ``name`` refers to.
+
+    Exact name first, then subject identity — "Café AI product" and "Cafe AI"
+    are one project, and matching only the exact string is how a deployment
+    ended up with both, the newer one taking every update while the older kept
+    a stale summary the assistant went on quoting.
+
+    An empty subject key (a name made entirely of filler) matches nothing, so
+    "the project" never collides with "the product".
+    """
+    normalised = _normalise(name)
+    exact = next((p for p in projects if _normalise(p.get("name")) == normalised), None)
+    if exact is not None:
+        return exact
+    key = subject_key(name)
+    if not key:
+        return None
+    return next((p for p in projects if subject_key(p.get("name")) == key), None)
+
+
 def upsert(
     name: str,
     *,
@@ -75,7 +98,7 @@ def upsert(
     now = datetime.now(timezone.utc).isoformat()
     with _LOCK:
         data = _read()
-        item = next((p for p in data["projects"] if _normalise(p.get("name")) == _normalise(name)), None)
+        item = _find(data["projects"], name)
         if item is None:
             item = {
                 "id": str(uuid.uuid4()),
@@ -136,12 +159,15 @@ def list_projects(*, include_archived: bool = False, limit: int = 100) -> list[d
 
 def get_project(project_id: str = "", name: str = "") -> dict | None:
     wanted_id = str(project_id or "").strip()
-    wanted_name = _normalise(name)
     with _LOCK:
-        for item in _read()["projects"]:
-            if (wanted_id and item.get("id") == wanted_id) or (wanted_name and _normalise(item.get("name")) == wanted_name):
-                return item
-    return None
+        projects = list(_read()["projects"])
+    if wanted_id:
+        found = next((p for p in projects if p.get("id") == wanted_id), None)
+        if found is not None:
+            return found
+    # Same identity rule as upsert: a lookup has to find the project a write
+    # would have landed on, or the two disagree about what exists.
+    return _find(projects, name) if name else None
 
 
 def update_source(project_id: str, source: dict) -> bool:
