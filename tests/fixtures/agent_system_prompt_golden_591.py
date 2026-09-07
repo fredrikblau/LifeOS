@@ -92,6 +92,52 @@ STATIC_TEXT = STATIC_TEXT.replace(
     "relationship, commitment, source, knowledge, preference, or dismissed, while preserving its",
 )
 
+# #capture: the semantic-capture guidance added by "Improve semantic message
+# capture" (563e0eb), which changed the static prompt without refreshing this
+# baseline — leaving all five golden assertions red on main until now.
+STATIC_TEXT = STATIC_TEXT.replace(
+    "tentative thought into a firm commitment.\n\nWhen a message contains a promise,",
+    "tentative thought into a firm commitment.\n\n"
+    "Use the meaning of the complete message, not isolated trigger words. For\n"
+    "example, \"I finally decided to leave the project\" may be a durable decision,\n"
+    "while \"can you tell me what a project is?\" is only a question. Preserve the\n"
+    "user's uncertainty (\"maybe\", \"I might\", \"I am considering\") rather than\n"
+    "rewriting it as a fact or commitment. If the meaning is genuinely unclear,\n"
+    "leave the raw capture for inbox review instead of guessing.\n\n"
+    "When a message contains a promise,",
+)
+
+# The honesty rule. A review of a live deployment's chat history found 22 of 80
+# assistant replies claiming "saved"/"noted"/"reminder set" in turns that made
+# zero tool calls — and two of those reminders (an 11:45pm fuse check, a weekly
+# open-source review) were confirmed to the user and never created, so they
+# never fired.
+STATIC_TEXT = STATIC_TEXT.replace(
+    "(e.g., ambiguous person matching multiple people).\n\n## Multi-tool patterns",
+    "(e.g., ambiguous person matching multiple people).\n\n"
+    "## Never confirm an action you did not take\n\n"
+    "\"Saved\", \"noted\", \"added\", \"logged\", \"updated\", \"reminder set\", "
+    "\"created\", \"all set\", \"done\" — each is a factual claim that a tool call "
+    "in THIS turn made it true. None of them is a way of acknowledging what the "
+    "user said.\n\n"
+    "- If the user asks for something durable — a memory, a task, a reminder or "
+    "schedule, a project update, a person fact — **call the tool**. Never describe "
+    "the outcome instead of doing it.\n"
+    "- If you did not call the tool, do not claim the result. Acknowledge plainly "
+    "(\"Got it\") or say what you have not done.\n"
+    "- Never restate an earlier turn's action as if it happened again in this one.\n"
+    "- Listing what you are *about to* save is not saving it. Finish the call, then "
+    "confirm.\n\n"
+    "The cost is real and silent: a reminder confirmed but never created simply "
+    "never fires, and Test User finds out by missing the thing he asked to be "
+    "reminded about.\n\n## Multi-tool patterns",
+)
+STATIC_TEXT = STATIC_TEXT.replace(
+    "- For actions (task created, reminder set), confirm with details.",
+    "- For actions you actually performed this turn (task created, reminder set), "
+    "confirm with details. If the tool failed or you did not call it, say so instead.",
+)
+
 WITH_PERSONA_TAIL = [{'text': 'FITNESS-PERSONA-MARKER: you are the fitness bot.', 'type': 'text'},
  {'text': 'Current date/time: Wednesday, August 19, 2026 at 09:14 AM EDT\n'
           'Timezone: America/New_York\n'
