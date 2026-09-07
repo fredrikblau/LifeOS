@@ -1,0 +1,47 @@
+name: tests
+
+# A contributor's first signal that their change is sound. Runs the same
+# selection the pre-push hook runs locally (`unit and not slow`), so a green
+# tick here means the same thing as a clean run on their machine.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref — reviewers should
+  # see the result for the latest commit, not a queue of stale ones.
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'   # the minimum this project supports
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only torch: the default PyPI wheel carries the CUDA runtime
+          # (~2.5GB) that a test runner never uses and cannot fit comfortably.
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install -r requirements.txt
+
+      - name: Lint changed code
+        run: ruff check --output-format=github api config scripts tests || true
+
+      - name: Unit tests
+        # Browser tests need Playwright and a live server; they are covered by
+        # `./scripts/test.sh browser` locally, not here.
+        run: |
+          pytest tests/ -m "unit and not slow" \
+            --ignore-glob='*_ui_browser.py' \
+            -n auto --dist loadscope -q

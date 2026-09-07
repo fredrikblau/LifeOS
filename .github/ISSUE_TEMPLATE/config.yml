@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security issue
+    url: https://github.com/fredrikblau/LifeOS/security/advisories/new
+    about: >-
+      Report privately. LifeOS holds a complete personal record and runs with
+      real authority over files and APIs — please don't open a public issue for
+      anything exploitable.

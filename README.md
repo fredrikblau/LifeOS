@@ -2,6 +2,13 @@
 
 **Your personal operating system, built from the digital exhaust of your life.**
 
+> **This is a fork.** LifeOS was created by [@nbramia](https://github.com/nbramia)
+> ([nbramia/LifeOS](https://github.com/nbramia/LifeOS)) and nearly all of the
+> system below is his work. This fork adapts it into a **Telegram-first,
+> provider-agnostic** assistant for a single operator on a small VPS — see
+> [What this fork changes](#what-this-fork-changes). Bug fixes that aren't
+> specific to that goal belong upstream, and are sent there.
+
 LifeOS is a self-hosted AI assistant that connects to your Gmail, Google Calendar, Google Docs/Sheets/Drive, iMessage, phone calls, WhatsApp, Slack, Obsidian vault, Granola meeting transcripts, iPhotos, LinkedIn, Apple contacts, Monarch finances, and Apple Health — then makes all of it **available and actionable through natural language.**
 
 You can talk to it by text or **voice**, through a web chat, through Telegram, or through any MCP client (Claude Desktop, Claude Code). It can answer from your data, take action on your behalf (draft email, schedule things, edit files), and hand long tasks to an autonomous agent that works while you don't.
@@ -207,6 +214,38 @@ Full walkthrough (including which external accounts each integration needs): [In
 
 ---
 
+## What this fork changes
+
+Upstream LifeOS assumes a workstation or a tailnet host, an Anthropic key, and a
+richly populated vault. This fork targets a different deployment: **one person,
+Telegram as the main surface, a 4GB VPS, and whichever LLM provider is cheapest
+this month.** That led to changes worth knowing about before you clone it:
+
+- **Any provider in one line.** `LIFEOS_LLM_PROVIDER=deepseek` plus that
+  provider's key replaces two hand-written JSON blobs. Presets ship for
+  Anthropic, OpenAI, DeepSeek, Gemini, OpenRouter, Groq, Mistral and local
+  servers. ([ADR-023](docs/adr/023-provider-presets.md))
+- **The API can require a token.** Upstream has no authentication, which is
+  sound on a tailnet and dangerous on a public IP. `LIFEOS_API_TOKEN` is
+  opt-in and inert when unset. ([ADR-022](docs/adr/022-optional-api-access-token.md))
+- **Records have subjects, not just names.** A newer status snapshot retires the
+  older one, projects resolve across spellings, and a restated reminder moves
+  instead of duplicating — so the assistant stops quoting facts you already
+  corrected. ([ADR-024](docs/adr/024-record-identity.md))
+- **A capture layer ("Life Inbox")**, structured projects, commitments,
+  follow-ups and a life model, all with source provenance.
+- **Tools with nothing behind them aren't offered**, so an unconfigured Google
+  account produces "not connected yet" instead of several seconds of searching
+  nothing.
+- **`./scripts/quickstart.sh`** — clone to running assistant in one pass.
+
+Fixes that are not fork-specific — an FTS5 query crash, backups that silently
+required an undocumented binary, a memory categoriser defeated by its own
+case-insensitivity — are upstream's bugs too, and belong in upstream PRs rather
+than only here.
+
+---
+
 ## Architecture
 
 Data flows from your sources, through local storage and indexing, into an orchestrator that answers queries and drives autonomous work across every surface:
@@ -341,13 +380,25 @@ Services are categorized by criticality and fallback behavior:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, and
+[SECURITY.md](SECURITY.md) before reporting anything exploitable.
+
+Two things specific to this project:
+
+- **Never paste real personal data into an issue, a test, or a doc.** LifeOS
+  logs contain memories, contacts and message content. Fixtures use obviously
+  synthetic names; keep it that way.
+- **Bug fixes usually belong upstream.** If what you are fixing isn't specific
+  to the Telegram-first/provider-agnostic goal above, open it against
+  [nbramia/LifeOS](https://github.com/nbramia/LifeOS) so everyone gets it.
 
 ---
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
+GNU General Public License v3.0 — see [LICENSE](LICENSE). Inherited from
+[nbramia/LifeOS](https://github.com/nbramia/LifeOS), whose authors hold
+copyright in the substantial majority of this code.
 
 Third-party material redistributed here (currently the Apache-2.0 nickname dataset) is recorded in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
