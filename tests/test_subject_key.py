@@ -82,6 +82,25 @@ class TestStatusSubject:
         b = status_subject("Memory: Agreement made with the owner of the cafe Qaf.")
         assert a != b or a is None
 
+    def test_a_dash_separates_a_subject_too(self):
+        """The model writes both "Car repair status (Aug 24): ..." and
+        "Car repair status as of Aug 27, 2026 — TCM reset is ...". Reading only
+        the colon left the dash-form snapshots outside supersession — and in
+        the corpus this came from, the surviving dash-form snapshot was the one
+        still asserting a claim the user had corrected."""
+        assert status_subject("Car repair status as of Aug 27, 2026 — TCM reset is next") \
+               == status_subject("Car repair status (Aug 24): calipers replaced")
+
+    def test_an_en_dash_or_spaced_hyphen_works_the_same(self):
+        expected = subject_key("car repair")
+        assert status_subject("Car repair status – battery charged") == expected
+        assert status_subject("Car repair status - battery charged") == expected
+
+    def test_a_hyphenated_word_is_not_a_separator(self):
+        """"front-end" must not split "Check front-end with mechanic" into a
+        subject and a body."""
+        assert status_subject("Check front-end with mechanic tomorrow") is None
+
     def test_a_url_is_not_a_subject(self):
         """"https://x.com/..." has a colon but names nothing."""
         assert status_subject("https://x.com/someone/status/123\n\nSave this") is None

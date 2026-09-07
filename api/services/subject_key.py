@@ -37,8 +37,13 @@ _AS_OF = re.compile(r"\s*(?:,\s*)?(?:as\s+of|for|on)\s+[^:]*$", re.I)
 
 _PARENTHETICAL = re.compile(r"\([^)]*\)")
 
-# A status line names its subject before the first colon.
-_STATUS_LINE = re.compile(r"^(?P<subject>[^:\n]{3,80}):\s")
+# A status line names its subject before its first separator. The model writes
+# both "Car repair status (Aug 24): ..." and "Car repair status as of Aug 27,
+# 2026 — TCM reset ...", so reading only the colon left half the snapshots
+# outside supersession — and the one that survived in the corpus this came
+# from was still asserting a claim the user had corrected. A hyphen counts
+# only when spaced, so "front-end" stays one word.
+_STATUS_LINE = re.compile(r"^(?P<subject>[^:\n—–]{3,80}?)\s*(?::\s|\s[—–-]\s)")
 
 
 def subject_key(text: str) -> str:
