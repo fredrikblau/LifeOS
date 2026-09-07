@@ -21,9 +21,15 @@ class TestPhotosSyncEndpoint:
         """Photos routes gate on `settings.photos_enabled`, a property
         derived from whether the Photos library file exists on disk — force
         it on so the sync handler itself gets exercised."""
-        from config.settings import Settings
+        # Patch the class the *route* will actually consult, not the Settings
+        # symbol this module happens to import. Those are normally the same
+        # object — but under xdist they were not always, and the fixture then
+        # silently patched nothing while the route kept returning 503. Going
+        # through the live instance removes the assumption entirely.
+        from config.settings import settings
         with patch.object(
-            Settings, "photos_enabled", new_callable=PropertyMock, return_value=True
+            type(settings), "photos_enabled",
+            new_callable=PropertyMock, return_value=True,
         ):
             yield
 
