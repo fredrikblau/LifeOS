@@ -167,30 +167,39 @@ To stay fully local, set `LIFEOS_LLM_BACKEND=local` and point `LIFEOS_LOCAL_LLM_
 
 ## Quick Start
 
-The minimal setup is a Claude API key and a folder of notes — everything else (Google, Slack, Telegram, Apple, voice, finances) is optional and layered on later.
+The minimal setup is one LLM provider's API key and a folder of notes — everything else (Google, Slack, Telegram, Apple, voice, finances) is optional and layered on later.
 
 ```bash
-# 1. Clone and install
 git clone <your-fork-url> LifeOS
 cd LifeOS
+./scripts/quickstart.sh
+```
+
+`quickstart.sh` checks your Python, builds the virtualenv, installs dependencies, and asks the handful of questions that actually have to be answered — vault path, which provider (`anthropic`, `openai`, `deepseek`, `gemini`, `openrouter`, `groq`, `mistral`, `local`) and its key, Telegram bot, timezone — then writes a `.env` you can read and edit. It is safe to re-run.
+
+Prefer to do it by hand:
+
+```bash
 python3 -m venv ~/.venvs/lifeos
 source ~/.venvs/lifeos/bin/activate
 pip install -r requirements.txt
 
-# 2. Configure
 cp .env.example .env
-# Edit .env — minimal required:
-#   LIFEOS_VAULT_PATH   → your Obsidian/markdown folder
-#   ANTHROPIC_API_KEY   → your Claude API key
-# (or LIFEOS_LLM_BACKEND=local with a running llama-server on LIFEOS_LOCAL_LLM_URL)
+# Minimal required in .env:
+#   LIFEOS_VAULT_PATH    → your Obsidian/markdown folder
+#   LIFEOS_LLM_PROVIDER  → anthropic | openai | deepseek | gemini | openrouter | groq | mistral | local
+#   <PROVIDER>_API_KEY   → that provider's key (e.g. ANTHROPIC_API_KEY)
 
-# 3. Start the vector DB + server
 ./scripts/chromadb.sh start
 ./scripts/server.sh start
-
-# 4. Open the app
-#   http://localhost:8000/chat
+# → http://localhost:8000/chat
 ```
+
+> **If this machine has a public IP, do not stop here.** LifeOS serves your
+> whole personal record and has no login of its own. Set `LIFEOS_API_TOKEN`
+> *and* keep port 8000 off the internet — bind `LIFEOS_HOST=127.0.0.1`,
+> firewall the port, or put it behind a VPN. See
+> [ADR-022](docs/adr/022-optional-api-access-token.md).
 
 For services that persist across reboots on Linux, run `sudo ./scripts/setup-systemd.sh` to install systemd units.
 

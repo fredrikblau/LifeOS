@@ -8,6 +8,27 @@ Reference for all LifeOS scripts with usage examples.
 
 ---
 
+## Setup
+
+### quickstart.sh
+
+One interactive pass from a fresh clone to a running assistant: checks for
+Python 3.11+, builds the virtualenv, installs dependencies, and writes a `.env`
+covering the core — vault, one LLM provider, optionally Telegram, timezone, and
+an API access token.
+
+```bash
+./scripts/quickstart.sh                # full setup
+./scripts/quickstart.sh --no-install   # write .env only, skip venv/pip
+```
+
+Safe to re-run: it backs up any existing `.env` and offers every current value
+as the prompt's default. It configures the core only — Google, Slack, Monarch,
+Apple data and the agent worker are added afterwards through
+[configuration.md](configuration.md).
+
+---
+
 ## Server Management
 
 ### server.sh

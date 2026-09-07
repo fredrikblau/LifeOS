@@ -20,6 +20,7 @@ Each section corresponds roughly to a section in [`config/settings.py`](../../co
 |---|---|---|---|
 | `LIFEOS_HOST` | str | `0.0.0.0` | API server bind address. Keep `0.0.0.0` for Tailscale access; `127.0.0.1` to restrict to localhost only. |
 | `LIFEOS_PORT` | int | `8000` | API server port. |
+| `LIFEOS_API_TOKEN` | str | — | Shared secret required from non-loopback API callers. Empty (default) leaves the API open, which is right on a private tailnet and dangerous on a public IP. Send it as `Authorization: Bearer <token>`, an `X-LifeOS-Token` header, or `?token=<token>` once in the browser (it is then stored as a cookie). Localhost callers and `/health` are always exempt. See [ADR-022](../adr/022-optional-api-access-token.md). |
 | `LIFEOS_SERVER_HOSTNAME` | str | — | Hostname of the one machine designated to run the LifeOS API server (e.g. `<your-host>`, matching `hostname`/`socket.gethostname()` there). Empty (default) disables the guard so a fresh clone is never blocked. When set, `api/main.py` and `scripts/server.sh` refuse to start on any other machine — other machines should point at the designated host via `LIFEOS_API_URL` instead of running their own server (#506). |
 | `LIFEOS_CHROMA_URL` | str | `http://localhost:8001` | ChromaDB server endpoint the API connects to. |
 | `LIFEOS_CHROMA_PATH` | path | `./data/chromadb` | Where ChromaDB persists its data. |
@@ -28,6 +29,12 @@ Each section corresponds roughly to a section in [`config/settings.py`](../../co
 | `LIFEOS_BACKUP_KEEP` | int | `2` | Nightly snapshots retained per database. Older ones are pruned only after a fully successful sync whose newest snapshot passes an integrity check, so repeated failures cannot rotate away the last good copy. |
 | `TAILNET_HTTPS_URL` | str | — | Your machine's Tailscale HTTPS URL (no port), e.g. `https://<your-machine>.<tailnet>.ts.net`. Used by `scripts/setup-tailscale.sh` status output, and returned as `secure_url` by `GET /api/chat/config` so `/chat` can offer a one-tap link here when the mic is blocked by an insecure context. **Open `/chat` on this URL for voice** — the mic requires HTTPS. |
 | `LIFEOS_VOICE_GATEWAY_URL` | str | `http://127.0.0.1:9788` | whisper-relay base URL; LifeOS reverse-proxies `/api/voice/*` here (ADR-016). |
+
+> **On a public IP, do both.** LifeOS holds a complete personal record and,
+> with no token set, serves all of it to anyone who can reach the port. Set
+> `LIFEOS_API_TOKEN` *and* keep port 8000 off the internet — bind
+> `LIFEOS_HOST=127.0.0.1`, firewall the port, or put it behind a VPN. The
+> server logs a warning at startup when it binds a wide address with no token.
 | `LIFEOS_AGENT_BACKEND_URL` | str | *(empty)* | Agent text backend base URL. LifeOS proxies it at `/api/agent/ask/stream`, adding a bearer server-side. Empty disables the `/chat` Agent option entirely. Deliberately absent from `.env.example` — see [voice-setup.md](voice-setup.md#optional-agent-and-hermes-text-backends). |
 | `LIFEOS_AGENT_BACKEND_TOKEN` | str | *(empty)* | Optional bearer token for the Agent text backend, added server-side (never exposed to the browser). |
 | `LIFEOS_HERMES_BACKEND_URL` | str | *(empty)* | Hermes text backend base URL, proxied the same way at `/api/hermes/ask/stream` (#587). Empty disables the `/chat` Hermes option; with no stored backend preference, `/chat` defaults to Hermes when it's configured and reachable, else LifeOS. Deliberately absent from `.env.example`. |
@@ -70,7 +77,38 @@ Governs chat synthesis, intent classification, and agentic orchestration. The to
 | `LIFEOS_LLM_MODEL` | str | — | Optional override for the GGUF model the `lifeos-llm` systemd unit loads. When unset, the unit uses its bundled `-hf` default; when set, the setup script substitutes a `-m`/`--mmproj` form. |
 | `LIFEOS_LOCAL_LLM_AUTOSTART` | bool | `false` | When `true`, the API service brings up `lifeos-llm` on its `Wants=` chain. Default `false` so a missing local model doesn't break the API. |
 
+### Choosing a provider
+
+The short path: name a provider and give it a key. That is the whole
+configuration for the common "one provider for everything" case.
+
+```dotenv
+LIFEOS_LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=sk-...
+```
+
+| Variable | Type | Default | Sets |
+|---|---|---|---|
+| `LIFEOS_LLM_PROVIDER` | str | — | One of `anthropic`, `openai`, `deepseek`, `gemini`, `openrouter`, `groq`, `mistral`, `local`. Points every model profile at that provider. |
+| `LIFEOS_LLM_DEFAULT_MODEL` | str | preset's choice | Model id for the `default` and `specialist` profiles. |
+| `LIFEOS_LLM_FAST_MODEL` | str | preset's choice | Model id for the cheap `fast` profile — classification, extraction, summarization. |
+| `LIFEOS_LLM_REASONING_MODEL` | str | preset's choice | Model id for the `reasoning` profile — planning, relationship analysis. |
+
+Each preset knows its own endpoint, which environment variable holds its key
+(`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`), and a starting model
+for each profile. The model ids are starting points — override any of them with
+the variables above without giving up the preset. A provider name that isn't in
+the list is logged as an error and ignored, so a typo can't take the assistant
+down. The catalogue itself is `PROVIDER_PRESETS` in
+`api/services/llm_client.py`. See [ADR-023](../adr/023-provider-presets.md).
+
 ### Provider and model registry
+
+The presets above cover the common case; this registry covers everything else
+— a provider that has no preset, different providers on different profiles, or
+a per-turn profile of your own. It is applied *after* any preset, so anything
+set here wins.
 
 For provider-independent deployments, set `LIFEOS_LLM_PROVIDERS` and
 `LIFEOS_LLM_MODELS` to JSON objects. A provider references its credential with
@@ -90,7 +128,9 @@ LIFEOS_LLM_MODELS='{"default":{"provider":"deepseek","model":"deepseek-chat"},"f
 ```
 
 The OpenAI-compatible client appends `/v1/chat/completions`; base URLs may
-include or omit a trailing `/v1`. Switching profiles changes only the model
+include or omit a trailing `/v1`. A provider whose compatibility layer lives
+elsewhere sets `chat_path` on its registry entry (Gemini's preset uses
+`/v1beta/openai/chat/completions`). Switching profiles changes only the model
 transport; memories, conversations, and the local data layer remain unchanged.
 Set `supports_vision: true` only for a configured model that actually accepts
 image input. If a `vision` profile exists, image turns select it automatically;
