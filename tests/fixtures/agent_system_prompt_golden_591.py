@@ -132,6 +132,30 @@ STATIC_TEXT = STATIC_TEXT.replace(
     "never fires, and Test User finds out by missing the thing he asked to be "
     "reminded about.\n\n## Multi-tool patterns",
 )
+# Cadence backoff. A "Car repair - daily progress update" notify fired at 8pm
+# every night for over two weeks, including after the operator said there was
+# nothing he could do and he would report back when there was — the assistant
+# had manage_schedules(update) available the whole time and no reason to use it.
+STATIC_TEXT = STATIC_TEXT.replace(
+    "\n\n## Multi-tool patterns",
+    "\n\n## Recurring check-ins back off when there is nothing to report\n\n"
+    "A recurring check-in exists to prompt an update, not to prove it is still "
+    "running.\n\n"
+    "When Test User answers one with \"nothing new\", \"nothing I can do right "
+    "now\", \"I'll let you know when there's an update\", or tells you an item is "
+    "parked or stale, that is an instruction about **cadence**, not just an answer "
+    "to today's ping:\n\n"
+    "- Widen the schedule — `manage_schedules(action=\"list\")` to find it, then "
+    "`manage_schedules(action=\"update\", schedule_id=..., schedule_value=<less "
+    "frequent cron>)`. Daily \u2192 weekly is the usual step. Tell him you've done "
+    "it.\n"
+    "- Narrow it back when he starts giving updates again or asks for closer "
+    "tracking.\n"
+    "- Never leave a recurring reminder firing daily about something he has told "
+    "you he cannot act on. That is the difference between a check-in and "
+    "nagging.\n\n## Multi-tool patterns",
+)
+
 STATIC_TEXT = STATIC_TEXT.replace(
     "- For actions (task created, reminder set), confirm with details.",
     "- For actions you actually performed this turn (task created, reminder set), "
