@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import AsyncGenerator
 from api.services.agent_system_prompt import build_system_prompt
 from api.services.agent_tools import TOOL_DEFINITIONS, TOOL_STATUS_MESSAGES, execute_tool_parallel, begin_email_send_turn
+from api.services.tool_availability import filter_tools, unavailable_note
 from api.services.synthesizer import build_message_content
 from api.services.perf_trace import trace_span
 from api.services.llm_client import get_local_llm, openai_tool_calls_to_anthropic, LLMUsage, LocalLLMClient
@@ -690,7 +691,15 @@ async def run_agent_loop(
     # Pass tool definitions through with their cache_control marker intact so
     # Anthropic caches the large, stable tool schema across turns and rounds.
     # The local backend strips cache_control itself in _anthropic_tools_to_openai.
-    tools = TOOL_DEFINITIONS
+    # Don't offer a tool with nothing behind it. On a deployment without
+    # Google/Slack/Monarch, an empty vault index or an empty CRM, most of the
+    # catalogue is dead — and the model can't tell, so it spends 1.5-4s rounds
+    # finding out. Withholding them removes those rounds and lets the reply be
+    # "Gmail isn't connected" instead of a confident nothing. Fails open.
+    tools, withheld_tools = filter_tools(TOOL_DEFINITIONS)
+    note = unavailable_note(withheld_tools)
+    if note:
+        system_prompt = [*system_prompt, {"type": "text", "text": note}]
 
     for round_num in range(1, max_tool_rounds + 1):
         print(f"[agent] Round {round_num}/{max_tool_rounds} starting")
