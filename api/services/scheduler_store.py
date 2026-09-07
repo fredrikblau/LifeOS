@@ -45,6 +45,7 @@ import yaml
 from croniter import croniter
 from zoneinfo import ZoneInfo
 
+from api.services.subject_key import subject_key
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -88,6 +89,29 @@ class ScheduleEntry:
     @classmethod
     def from_dict(cls, data: dict) -> "ScheduleEntry":
         return cls(**{k: data[k] for k in cls.__dataclass_fields__ if k in data})
+
+
+def _normalise_cron(value: str) -> str:
+    """Collapse whitespace so "0 11 * * 0" and "0  11 * * 0" are one cadence."""
+    return " ".join(str(value or "").split())
+
+
+def _same_local_day(a: str, b: str) -> bool:
+    """True when two one-off trigger times fall on the same calendar day.
+
+    The day is the identity of a one-off reminder: moving this evening's
+    reminder to 4pm is a correction, while asking again tomorrow is a new
+    reminder. Anything unparseable is treated as *not* the same day, so a bad
+    timestamp can never silently swallow a reminder.
+    """
+    try:
+        first = datetime.fromisoformat(str(a))
+        second = datetime.fromisoformat(str(b))
+    except (TypeError, ValueError):
+        return False
+    if (first.tzinfo is None) != (second.tzinfo is None):
+        return False
+    return first.date() == second.date()
 
 
 def compute_next_trigger(entry: ScheduleEntry) -> Optional[str]:
@@ -456,6 +480,40 @@ class SchedulerStore:
     # CRUD
     # ------------------------------------------------------------------
 
+    def _find_equivalent(self, candidate: ScheduleEntry) -> Optional[ScheduleEntry]:
+        """Return the live schedule ``candidate`` is a restatement of, if any.
+
+        "Remind me tomorrow to polish my resume" followed by "can't right now,
+        remind me 4pm" is one reminder being moved, not two being wanted — but
+        create() had no way to know that, so both fired. Two schedules are the
+        same when they are the same kind of trigger, the same action, and the
+        same subject:
+
+        - one-off: same subject on the same local day (asking again tomorrow
+          is a genuinely new reminder, so the day is part of the identity);
+        - recurring: same subject and the identical cadence (a different cron
+          is a different schedule, not a correction of this one).
+
+        Only enabled schedules match. A one-off that has already fired is
+        disabled, so asking for it again schedules it again.
+        """
+        key = subject_key(candidate.name)
+        if not key:
+            return None
+        for entry in self._entries.values():
+            if not entry.enabled or entry.id == candidate.id:
+                continue
+            if entry.schedule_type != candidate.schedule_type or entry.action != candidate.action:
+                continue
+            if subject_key(entry.name) != key:
+                continue
+            if candidate.schedule_type == "cron":
+                if _normalise_cron(entry.schedule_value) == _normalise_cron(candidate.schedule_value):
+                    return entry
+            elif _same_local_day(entry.schedule_value, candidate.schedule_value):
+                return entry
+        return None
+
     def create(self, action: Optional[str] = None, **kwargs) -> ScheduleEntry:
         with self._lock:
             # Default action from legacy message_type when not given explicitly.
@@ -467,6 +525,20 @@ class SchedulerStore:
                 action=action,
                 **kwargs,
             )
+            existing = self._find_equivalent(entry)
+            if existing is not None:
+                logger.info(
+                    "Schedule %s restates %s (%r) — moving it instead of adding a second",
+                    entry.name, existing.id, existing.name,
+                )
+                # Deliberately keeps the original name: a restatement updates
+                # when something happens, it does not rename it.
+                updated = self._update_locked(
+                    existing.id,
+                    schedule_value=entry.schedule_value,
+                    message_content=entry.message_content or None,
+                )
+                return updated or existing
             entry.next_trigger_at = compute_next_trigger(entry)
             self._insert_block_at_top(_format_entry_block(entry))
             self._entries = {**self._entries, entry.id: entry}
@@ -486,17 +558,21 @@ class SchedulerStore:
 
     def update(self, entry_id: str, **kwargs) -> Optional[ScheduleEntry]:
         with self._lock:
-            entry = self._entries.get(entry_id)
-            if not entry:
-                return None
-            for key, value in kwargs.items():
-                if hasattr(entry, key) and value is not None:
-                    setattr(entry, key, value)
-            if any(k in kwargs for k in ("schedule_type", "schedule_value", "enabled", "timezone")):
-                entry.next_trigger_at = compute_next_trigger(entry) if entry.enabled else None
-            self._rewrite_block(entry)
-            self._save()
-            return entry
+            return self._update_locked(entry_id, **kwargs)
+
+    def _update_locked(self, entry_id: str, **kwargs) -> Optional[ScheduleEntry]:
+        """update()'s body, for callers that already hold the lock."""
+        entry = self._entries.get(entry_id)
+        if not entry:
+            return None
+        for key, value in kwargs.items():
+            if hasattr(entry, key) and value is not None:
+                setattr(entry, key, value)
+        if any(k in kwargs for k in ("schedule_type", "schedule_value", "enabled", "timezone")):
+            entry.next_trigger_at = compute_next_trigger(entry) if entry.enabled else None
+        self._rewrite_block(entry)
+        self._save()
+        return entry
 
     def delete(self, entry_id: str) -> bool:
         with self._lock:
