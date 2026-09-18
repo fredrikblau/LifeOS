@@ -598,12 +598,22 @@ class LocalLLMClient:
         api_key: str | None = None,
         supports_vision: bool = False,
         chat_path: str = DEFAULT_CHAT_PATH,
+        local_server: bool = True,
     ):
         self.base_url = (base_url or getattr(settings, "local_llm_url", None) or "http://localhost:8080").rstrip("/")
         self.timeout = timeout or getattr(settings, "local_llm_timeout", 90)
         self._model = model
         self._api_key = api_key
         self.supports_vision = supports_vision
+        # True for the self-hosted llama-server, False for a hosted
+        # OpenAI-compatible endpoint (DeepSeek, Command Code, Fireworks…).
+        # The two speak the same wire protocol but not the same extensions:
+        # llama.cpp reads `chat_template_kwargs` / `reasoning_effort` to control
+        # thinking, and a hosted gateway may reject an unknown body field. Only
+        # the local server should ever be handed those. Defaults True so a
+        # directly-constructed client (the singleton, and every test double)
+        # keeps exactly the behaviour it had before this distinction existed.
+        self.local_server = local_server
         # Providers whose OpenAI-compatible surface is not at /v1 (Gemini)
         # differ only in this path, so it stays a parameter rather than a
         # subclass.
@@ -1361,6 +1371,12 @@ def get_llm(
         return OpenAICompatibleLLMClient(
             base_url=base_url, model=model_name, api_key=config.api_key,
             supports_vision=config.supports_vision, chat_path=config.chat_path,
+            # A registry provider is a hosted endpoint unless it IS the
+            # configured local server (the `local` preset exists for that case).
+            local_server=(
+                config.type == "local"
+                or base_url == (getattr(settings, "local_llm_url", "") or "").rstrip("/")
+            ),
         )
     raise ValueError(f"Unsupported LLM provider type {config.type!r}")
 

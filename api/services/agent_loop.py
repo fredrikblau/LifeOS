@@ -626,8 +626,16 @@ async def run_agent_loop(
     # instance (same OpenAI-compatible plumbing) but isn't llama-server —
     # it doesn't understand llama-server's chat_template_kwargs switch, so
     # this local-only knob must never reach it regardless of the setting.
+    # `local_server` (not just isinstance) gates the llama.cpp-specific field:
+    # a hosted OpenAI-compatible provider (DeepSeek, Command Code) is also a
+    # LocalLLMClient, and `chat_template_kwargs` is not part of the OpenAI
+    # schema — it must never reach a gateway.
     astream_kwargs: dict = {}
-    if isinstance(client, LocalLLMClient) and not force_remote:
+    if (
+        isinstance(client, LocalLLMClient)
+        and not force_remote
+        and getattr(client, "local_server", True)
+    ):
         astream_kwargs["enable_thinking"] = None if settings.local_agent_enable_thinking else False
 
     # Bind a fresh per-turn email-draft set. The send gate uses this to refuse

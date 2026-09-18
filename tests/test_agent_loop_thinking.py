@@ -180,3 +180,49 @@ async def test_anthropic_astream_never_receives_enable_thinking():
 
     result = next(e["result"] for e in events if e["type"] == "result")
     assert result.full_text == "42"
+
+
+@pytest.mark.asyncio
+async def test_hosted_provider_never_receives_llama_cpp_fields():
+    """A hosted OpenAI-compatible provider (DeepSeek, Command Code) is still a
+    LocalLLMClient, but `chat_template_kwargs` is a llama.cpp extension that is
+    not part of the OpenAI schema. It must never be sent to a gateway."""
+    from api.services import agent_loop
+
+    client, async_client = _local_client_with_chunks([
+        {"choices": [{"delta": {"content": "42"}, "finish_reason": None}]},
+        _done_chunk(),
+    ])
+    # Mark it as a hosted endpoint rather than the self-hosted llama-server.
+    client.local_server = False
+
+    with (
+        patch.object(agent_loop, "_select_client", return_value=client),
+        patch.object(agent_loop.settings, "local_agent_enable_thinking", False),
+    ):
+        _ = [e async for e in agent_loop.run_agent_loop("what is 6x7", max_tool_rounds=1)]
+
+    assert async_client.bodies
+    for body in async_client.bodies:
+        assert "chat_template_kwargs" not in body
+
+
+class TestLocalServerFlag:
+    def test_registry_hosted_provider_is_not_marked_local(self, monkeypatch):
+        from api.services.llm_client import get_llm
+        from config.settings import settings
+
+        monkeypatch.setattr(settings, "llm_models_json", "")
+        monkeypatch.setattr(settings, "llm_provider_preset", "commandcode")
+        monkeypatch.setenv("COMMANDCODE_API_KEY", "cc_test")
+
+        assert get_llm("default").local_server is False
+
+    def test_local_preset_is_marked_local(self, monkeypatch):
+        from api.services.llm_client import get_llm
+        from config.settings import settings
+
+        monkeypatch.setattr(settings, "llm_models_json", "")
+        monkeypatch.setattr(settings, "llm_provider_preset", "local")
+
+        assert get_llm("default").local_server is True
