@@ -3624,9 +3624,15 @@ def _tool_list_inbox_proposals(inp: dict) -> str:
         since_days = max(0, min(int(inp.get("since_days", 30)), 3650))
     except (TypeError, ValueError):
         since_days = 30
+    # A proposal that already carries `confirmed_at` has been turned into a real
+    # task/reminder and must not be reported as outstanding. Listing it again
+    # made every review claim there was work waiting that had already been done
+    # — the assistant confidently telling the operator to act on something that
+    # no longer needed action. (`confirm_inbox_proposal` already refuses a
+    # second confirmation; the lister just never consulted it.)
     items = [
         item for item in list_items(status="processed", limit=1000, since_days=since_days)
-        if item.get("proposal")
+        if isinstance(item.get("proposal"), dict) and not item["proposal"].get("confirmed_at")
     ][:limit]
     if not items:
         return f"There are no pending Life Inbox proposals from the last {since_days} days."

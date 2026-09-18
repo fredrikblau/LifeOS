@@ -464,3 +464,49 @@ def test_relationship_capture_writes_unconfirmed_person_fact(tmp_path, monkeypat
     assert saved[0].confirmed_by_user is False
     assert saved[0].source_quote == "John is moving to Berlin"
     assert saved[0].source_link == "telegram://1/99"
+
+
+def test_confirmed_proposals_are_not_reported_as_pending(tmp_path, monkeypatch):
+    """A proposal that was already confirmed must not appear in the pending list.
+
+    Regression: the lister filtered only on `proposal` existing, so a review
+    reported every already-created task/reminder as still outstanding — the
+    assistant telling the operator to act on work that was already done.
+    """
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.services.agent_tools import _tool_list_inbox_proposals
+
+    pending = inbox_store.add_item("Remind me to call the dentist tomorrow")
+    inbox_store.update_item(
+        pending["id"], status="processed", category="reminder",
+        proposal={"type": "reminder", "content": "Call the dentist", "requires_confirmation": True},
+    )
+    confirmed = inbox_store.add_item("Remind me to call John next week")
+    inbox_store.update_item(
+        confirmed["id"], status="processed", category="reminder",
+        proposal={
+            "type": "reminder", "content": "Call John", "requires_confirmation": True,
+            "confirmed_at": "2026-09-01T00:00:00+00:00",
+            "confirmed_result": 'Schedule created: "Call John"',
+        },
+    )
+
+    result = _tool_list_inbox_proposals({"since_days": 3650})
+
+    assert pending["id"] in result
+    assert confirmed["id"] not in result
+    assert "Pending Life Inbox proposals (1)" in result
+
+
+def test_no_pending_proposals_reports_none(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.services.agent_tools import _tool_list_inbox_proposals
+
+    item = inbox_store.add_item("Remind me to call John next week")
+    inbox_store.update_item(
+        item["id"], status="processed", category="reminder",
+        proposal={"type": "reminder", "content": "Call John", "requires_confirmation": True,
+                  "confirmed_at": "2026-09-01T00:00:00+00:00"},
+    )
+
+    assert "no pending Life Inbox proposals" in _tool_list_inbox_proposals({"since_days": 3650})
