@@ -567,3 +567,50 @@ def test_proposal_tools_are_registered():
         assert tool in _TOOL_HANDLERS
         assert tool in TOOL_STATUS_MESSAGES
     assert "dismiss_inbox_proposal" in _SYNC_HANDLERS
+
+
+def test_handled_command_is_closed_not_left_unreviewed(tmp_path, monkeypatch):
+    """A turn that ran a tool was handled, even for an imperative command.
+
+    Regression: the retention rule kept every non-question longer than a
+    greeting, so operational commands accumulated as unreviewed noise.
+    """
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.routes.chat import _close_chat_inbox_item
+
+    command = "Look at my pending Life Inbox proposals and dismiss the stale ones"
+    item = inbox_store.add_item(command)
+    _close_chat_inbox_item(
+        item["id"], command,
+        [{"tool": "dismiss_inbox_proposal", "input": {"proposal_id": "x"}, "is_error": False}],
+    )
+
+    assert inbox_store.list_items(status="unreviewed") == []
+    assert inbox_store.list_items(status="dismissed")[0]["id"] == item["id"]
+
+
+def test_unhandled_statement_still_stays_open(tmp_path, monkeypatch):
+    """The original bug must stay fixed: no tool ran, so keep the statement."""
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.routes.chat import _close_chat_inbox_item
+
+    update = "i'm openning another account for the arbitrage. these are continues work they shouldnt go stale."
+    item = inbox_store.add_item(update)
+    _close_chat_inbox_item(item["id"], update, [])
+
+    assert inbox_store.list_items(status="unreviewed")[0]["id"] == item["id"]
+
+
+def test_failed_tool_call_does_not_hide_a_statement(tmp_path, monkeypatch):
+    """An errored tool call did not handle anything, so the statement stays."""
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.routes.chat import _close_chat_inbox_item
+
+    update = "i just started a new project building a local AI chatbot for tourists"
+    item = inbox_store.add_item(update)
+    _close_chat_inbox_item(
+        item["id"], update,
+        [{"tool": "manage_projects", "input": {"action": "upsert"}, "is_error": True}],
+    )
+
+    assert inbox_store.list_items(status="unreviewed")[0]["id"] == item["id"]

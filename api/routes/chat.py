@@ -456,8 +456,13 @@ def _close_chat_inbox_item(item_id: str, question: str, tool_calls: list[dict]) 
             break
 
     # A meaningful statement the model did not act on stays open for review
-    # instead of being dismissed as conversational noise.
-    if category == "dismissed" and not _is_transient_capture(question):
+    # instead of being dismissed as conversational noise. The retention rule
+    # only applies when the turn did NOTHING: a turn that successfully ran a
+    # tool was handled, whatever it was — otherwise every operational command
+    # ("review my inbox", "confirm that proposal") accumulates as unreviewed
+    # noise, because none of them are phrased as questions and all of them are
+    # longer than a greeting.
+    if category == "dismissed" and not successful and not _is_transient_capture(question):
         return
 
     try:
