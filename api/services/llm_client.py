@@ -59,8 +59,28 @@ class LLMProviderPreset:
     reasoning_model: str = ""
     base_url: str = ""
     api_key_env: str = ""
+    # Fallback env vars checked in order when ``api_key_env`` is unset, so one
+    # provider can be reached under whichever name its SDK or docs use (e.g.
+    # Command Code accepts both COMMANDCODE_API_KEY and the CLI's CMD_API_KEY).
+    api_key_env_aliases: tuple[str, ...] = ()
     chat_path: str = DEFAULT_CHAT_PATH
     supports_vision: bool = False
+
+    def api_key_from_env(self) -> str:
+        """Resolve this preset's credential from the environment.
+
+        The primary env var wins; aliases are only consulted when it is empty,
+        so an explicit choice is never overridden by a leftover alias.
+        """
+        for name in (self.api_key_env, *self.api_key_env_aliases):
+            value = os.environ.get(name, "") if name else ""
+            if value:
+                return value
+        return ""
+
+    def missing_key_error(self) -> str:
+        """The env var name to name in a warning when no key resolved."""
+        return self.api_key_env or (self.api_key_env_aliases[0] if self.api_key_env_aliases else "")
 
     def model_for(self, profile: str) -> str:
         if profile == "fast":
@@ -97,6 +117,21 @@ PROVIDER_PRESETS: dict[str, LLMProviderPreset] = {
         fast_model="deepseek-chat",
         reasoning_model="deepseek-reasoner",
         api_key_env="DEEPSEEK_API_KEY",
+    ),
+    # Command Code Provider: one OpenAI-compatible gateway in front of every
+    # top model (Claude, GPT, Gemini, and the strongest open models). The
+    # endpoint is the gateway root; the client appends /v1/chat/completions,
+    # which is exactly the path the provider serves. The key is the same one
+    # the `cmd` CLI uses, so both names are accepted.
+    "commandcode": LLMProviderPreset(
+        type="openai_compatible",
+        base_url="https://api.commandcode.ai/provider",
+        default_model="deepseek/deepseek-v4.1-flash",
+        fast_model="deepseek/deepseek-v4.1-flash",
+        reasoning_model="deepseek/deepseek-v4.1-flash",
+        api_key_env="COMMANDCODE_API_KEY",
+        api_key_env_aliases=("COMMAND_CODE_API_KEY", "CMD_API_KEY"),
+        supports_vision=True,
     ),
     "gemini": LLMProviderPreset(
         type="openai_compatible",
@@ -188,12 +223,12 @@ def _resolve_preset(
         return
 
     base_url = preset.base_url or getattr(settings, "local_llm_url", "") or ""
-    api_key = os.environ.get(preset.api_key_env, "") if preset.api_key_env else ""
-    if preset.api_key_env and not api_key:
+    api_key = preset.api_key_from_env()
+    if preset.missing_key_error() and not api_key:
         logger.warning(
             "LIFEOS_LLM_PROVIDER=%s is selected but %s is not set — calls to "
             "this provider will fail until it is.",
-            requested, preset.api_key_env,
+            requested, preset.missing_key_error(),
         )
     providers[requested] = LLMProviderConfig(
         name=requested,
@@ -1345,7 +1380,16 @@ def get_local_llm() -> LocalLLMClient | AnthropicLLMClient:
     if _llm_client is None:
         _providers, _models = get_llm_registry()
         models_json = getattr(settings, "llm_models_json", "")
-        if isinstance(models_json, str) and models_json.strip():
+        preset = getattr(settings, "llm_provider_preset", "")
+        # A named preset is a first-class way to select the backend (ADR-023),
+        # so it must be honored here too — not only the hand-written JSON. When
+        # only the JSON was checked, `LIFEOS_LLM_PROVIDER=commandcode` +
+        # COMMANDCODE_API_KEY silently ran on the legacy Anthropic backend
+        # (usually with no key), which looked exactly like the provider being
+        # down. Either configuration means "use the registry default".
+        if (isinstance(models_json, str) and models_json.strip()) or (
+            isinstance(preset, str) and preset.strip()
+        ):
             logger.info("Using configured LLM provider/model registry")
             _llm_client = get_llm("default")
             return _llm_client

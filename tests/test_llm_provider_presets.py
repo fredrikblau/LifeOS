@@ -27,7 +27,8 @@ def clean_registry_env(monkeypatch):
     monkeypatch.setattr(settings, "llm_fast_model_override", "")
     monkeypatch.setattr(settings, "llm_reasoning_model_override", "")
     for var in ("DEEPSEEK_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
-                "OPENROUTER_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY"):
+                "OPENROUTER_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
+                "COMMANDCODE_API_KEY", "COMMAND_CODE_API_KEY", "CMD_API_KEY"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -45,6 +46,56 @@ class TestPresetCatalog:
         for name in ("anthropic", "openai", "deepseek", "gemini",
                      "openrouter", "local"):
             assert name in PROVIDER_PRESETS
+
+
+class TestCommandCodePreset:
+    """Command Code is a gateway, so it must not shadow the native providers."""
+
+    def test_preset_points_at_the_provider_endpoint(self):
+        from api.services.llm_client import PROVIDER_PRESETS
+        preset = PROVIDER_PRESETS["commandcode"]
+        assert preset.base_url == "https://api.commandcode.ai/provider"
+        assert preset.default_model == "deepseek/deepseek-v4.1-flash"
+        assert preset.reasoning_model == "deepseek/deepseek-v4.1-flash"
+
+    def test_primary_env_var_resolves_the_key(self, monkeypatch):
+        monkeypatch.setattr(settings, "llm_provider_preset", "commandcode")
+        monkeypatch.setenv("COMMANDCODE_API_KEY", "cc_test")
+
+        providers, models = get_llm_registry()
+
+        assert providers["commandcode"].api_key == "cc_test"
+        assert providers["commandcode"].base_url == "https://api.commandcode.ai/provider"
+        for profile in ("default", "fast", "specialist", "reasoning"):
+            assert models[profile].provider == "commandcode", profile
+            assert models[profile].model == "deepseek/deepseek-v4.1-flash"
+
+    def test_alias_env_var_is_honored(self, monkeypatch):
+        monkeypatch.setattr(settings, "llm_provider_preset", "commandcode")
+        monkeypatch.setenv("CMD_API_KEY", "cmd_test")
+
+        providers, _ = get_llm_registry()
+
+        assert providers["commandcode"].api_key == "cmd_test"
+
+    def test_primary_key_wins_over_alias(self, monkeypatch):
+        monkeypatch.setattr(settings, "llm_provider_preset", "commandcode")
+        monkeypatch.setenv("COMMANDCODE_API_KEY", "primary")
+        monkeypatch.setenv("CMD_API_KEY", "alias")
+
+        providers, _ = get_llm_registry()
+
+        assert providers["commandcode"].api_key == "primary"
+
+    def test_client_uses_the_openai_chat_path(self, monkeypatch):
+        monkeypatch.setattr(settings, "llm_provider_preset", "commandcode")
+        monkeypatch.setenv("COMMANDCODE_API_KEY", "cc_test")
+
+        client = get_llm("default")
+
+        assert client.chat_path == "/v1/chat/completions"
+        assert client.base_url == "https://api.commandcode.ai/provider"
+        assert client.model == "deepseek/deepseek-v4.1-flash"
 
 
 class TestPresetSelection:

@@ -360,6 +360,76 @@ def test_confirm_task_proposal_creates_native_task_once(tmp_path, monkeypatch):
     assert len(manager.list_tasks()) == 1
 
 
+def test_meaningful_statement_stays_open_instead_of_being_dismissed(tmp_path, monkeypatch):
+    """Ongoing-work updates are real state, not conversational noise.
+
+    Regression: "i'm openning another account for the arbitrage... these are
+    continues work they shouldnt go stale." was closed as dismissed when the
+    model answered without calling a tool, losing the update.
+    """
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.routes.chat import _close_chat_inbox_item, _is_transient_capture
+
+    ongoing = (
+        "i'm openning another account for the arbitrage. i'm applying for more "
+        "jobs right now. these are continues work they shouldnt go stale."
+    )
+    assert not _is_transient_capture(ongoing)
+    item = inbox_store.add_item(ongoing)
+    _close_chat_inbox_item(item["id"], ongoing, [])
+
+    assert inbox_store.list_items(status="unreviewed")[0]["id"] == item["id"]
+    assert inbox_store.list_items(status="dismissed") == []
+
+
+def test_trivial_messages_are_still_dismissed(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.routes.chat import _close_chat_inbox_item, _is_transient_capture
+
+    for trivial in ("hi", "thanks!", "Both", "ok", "what color is Mars?"):
+        assert _is_transient_capture(trivial), trivial
+        item = inbox_store.add_item(trivial)
+        _close_chat_inbox_item(item["id"], trivial, [])
+
+    dismissed = inbox_store.list_items(status="dismissed")
+    assert len(dismissed) == 5
+    assert inbox_store.list_items(status="unreviewed") == []
+
+
+def test_reminder_candidate_resolves_relative_days():
+    """An explicit "remind me … in N days" creates a real future reminder."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from api.routes.chat import _reminder_candidate
+
+    candidate = _reminder_candidate("Remind me to call Amir Reza Abdi. My highschool classmate. in 2-3 days")
+
+    assert candidate is not None
+    assert candidate["schedule_type"] == "once"
+    assert "call Amir Reza Abdi" in candidate["name"]
+    when = datetime.fromisoformat(candidate["schedule_value"])
+    now = datetime.now(ZoneInfo("Asia/Tehran"))
+    delta_days = (when - now).total_seconds() / 86400
+    assert 1.5 < delta_days < 2.5
+
+
+def test_reminder_candidate_uses_shared_time_parser():
+    from api.routes.chat import _reminder_candidate
+
+    candidate = _reminder_candidate("remind me to email the landlord tomorrow morning")
+
+    assert candidate is not None
+    assert candidate["message_content"] == "email the landlord tomorrow morning"
+
+
+def test_reminder_candidate_ignores_ambiguous_time():
+    """No resolvable time is left to the agent — never guessed."""
+    from api.routes.chat import _reminder_candidate
+
+    assert _reminder_candidate("remind me to think about the project") is None
+    assert _reminder_candidate("what is my schedule?") is None
+
+
 def test_relationship_capture_writes_unconfirmed_person_fact(tmp_path, monkeypatch):
     monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
     from api.services.memory_store import MemoryStore

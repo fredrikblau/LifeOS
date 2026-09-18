@@ -8,6 +8,7 @@ import re
 import uuid
 from typing import Optional
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -251,6 +252,77 @@ def _requested_life_review_mode(question: str) -> str | None:
     return None
 
 
+_REMIND_ME_RE = re.compile(
+    r"^\s*(?:please\s+)?remind\s+me\s+(?:to\s+|that\s+|about\s+)?(.+?)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+# The day/week/month forms `parse_contextual_time` does not cover. A range like
+# "in 2-3 days" resolves to its first bound, which is the earlier (safer) time.
+_RELATIVE_DAYS_RE = re.compile(
+    r"\bin\s+(\d+)(?:\s*-\s*\d+)?\s*(day|week|month)s?\b",
+    re.IGNORECASE,
+)
+
+
+def _reminder_when(question: str, now: datetime) -> datetime | None:
+    """Resolve a future fire time from the question, or None.
+
+    Uses the shared ``parse_contextual_time`` for the expressions it knows
+    ("tomorrow morning", "at 6pm", "in 30 minutes") and adds the day/week/month
+    spans it does not, so "in 2-3 days" is a real reminder rather than a
+    silently dropped one.
+    """
+    expression = extract_time_from_query(question)
+    if expression:
+        when = parse_contextual_time(expression, now)
+        if when and when > now:
+            return when
+    match = _RELATIVE_DAYS_RE.search(question or "")
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower()
+        delta = {
+            "day": timedelta(days=amount),
+            "week": timedelta(weeks=amount),
+            "month": timedelta(days=30 * amount),
+        }[unit]
+        return now + delta
+    return None
+
+
+def _reminder_candidate(question: str) -> dict | None:
+    """Deterministic fallback for an explicit, time-resolvable "remind me".
+
+    The model is asked to call ``manage_reminders`` itself, but a reminder that
+    is confirmed and never created simply never fires — the user finds out by
+    missing the thing they asked to be reminded about. When the phrasing is
+    explicit *and* the time resolves to the future, this creates it regardless.
+    Anything ambiguous (no resolvable time) is left to the agent to interpret.
+    """
+    text = re.sub(
+        r"^\[(?:Voice message transcription|Telegram [^\]]+)\]\s*\n?",
+        "",
+        (question or "").strip(),
+        flags=re.IGNORECASE,
+    ).strip()
+    match = _REMIND_ME_RE.match(text)
+    if not match:
+        return None
+    task = match.group(1).strip().rstrip(".")
+    if len(task) < 3:
+        return None
+    now = datetime.now(ZoneInfo(settings.timezone))
+    when = _reminder_when(text, now)
+    if when is None:
+        return None
+    return {
+        "name": task[:120],
+        "schedule_type": "once",
+        "schedule_value": when.isoformat(),
+        "message_content": task,
+    }
+
+
 def _source_capture_candidate(question: str, source: dict | None) -> str | None:
     """Return a source capture when a transport carries a durable reference."""
     if not isinstance(source, dict):
@@ -294,6 +366,40 @@ def _commitment_query_person(question: str) -> str:
         re.IGNORECASE,
     )
     return match.group(1) if match else ""
+
+
+# Messages that carry no durable information at all: greetings, one-word
+# acknowledgements, and bare follow-up selections. Everything else is kept for
+# review — see _is_transient_capture.
+_TRANSIENT_CAPTURE_RE = re.compile(
+    r"(?i)^\s*(?:"
+    r"hi|hello|hey|yo|sup|thanks|thank you|thx|ty|"
+    r"ok(?:ay)?|k|cool|nice|great|sure|yes|yeah|yep|no|nope|both|either|"
+    r"all|none|neither|the first one|the second one|option \d+"
+    r")\s*[.!]*\s*$"
+)
+
+
+def _is_transient_capture(content: str) -> bool:
+    """True only for a message that is provably not a durable capture.
+
+    The chat capture is written to the Life Inbox before interpretation, and
+    the common case closes it as ``dismissed`` once the turn is answered. That
+    is wrong for a declarative statement about the operator's own life: an
+    ongoing-work update ("I'm opening another account for the arbitrage; these
+    are continuous work, they shouldn't go stale") is real state, and
+    dismissing it as noise is exactly how it gets lost. Questions, greetings,
+    and one-word replies are transient; anything else stays unreviewed so the
+    weekly review still sees it.
+    """
+    text = (content or "").strip()
+    if not text:
+        return True
+    if "?" in text:
+        return True
+    if _TRANSIENT_CAPTURE_RE.match(text):
+        return True
+    return len(text.split()) <= 2 and len(text) <= 24
 
 
 def _close_chat_inbox_item(item_id: str, question: str, tool_calls: list[dict]) -> None:
@@ -348,6 +454,11 @@ def _close_chat_inbox_item(item_id: str, question: str, tool_calls: list[dict]) 
         if name in {"manage_reminders", "manage_schedules"} and args.get("action") == "create":
             category = "reminder"
             break
+
+    # A meaningful statement the model did not act on stays open for review
+    # instead of being dismissed as conversational noise.
+    if category == "dismissed" and not _is_transient_capture(question):
+        return
 
     try:
         from api.services.inbox_store import update_item
@@ -1601,6 +1712,34 @@ async def ask_stream(request: AskStreamRequest):
                 })
                 if not _followup_result.startswith("Error:"):
                     _notice = "\n\nI will check whether you hear back and remind you if needed."
+                    agent_result.full_text += _notice
+                    await _content(_notice)
+
+            # An explicit "remind me to … <time>" must not be confirmed and then
+            # silently never fire. Create it deterministically when the model
+            # replied without calling a reminder/schedule tool.
+            _reminder_candidate_value = _reminder_candidate(request.question)
+            _reminder_tool_succeeded = any(
+                tc.get("tool") in {"manage_reminders", "manage_schedules"}
+                and not tc.get("is_error")
+                and (tc.get("input") or {}).get("action") == "create"
+                for tc in agent_result.tool_calls_log
+            )
+            if _reminder_candidate_value and not _reminder_tool_succeeded:
+                from api.services.agent_tools import _reminder_create
+                _reminder_result = _reminder_create(_reminder_candidate_value)
+                _reminder_failed = _reminder_result.startswith("Error:")
+                agent_result.tool_calls_log.append({
+                    "tool": "manage_reminders",
+                    "input": {"action": "create", **_reminder_candidate_value},
+                    "result": _reminder_result,
+                    "is_error": _reminder_failed,
+                })
+                if not _reminder_failed:
+                    _notice = (
+                        "\n\nI set that reminder for "
+                        f"{format_time_for_display(datetime.fromisoformat(_reminder_candidate_value['schedule_value']))}."
+                    )
                     agent_result.full_text += _notice
                     await _content(_notice)
 

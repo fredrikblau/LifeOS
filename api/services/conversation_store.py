@@ -5,16 +5,27 @@ Manages persistent conversation threads using SQLite.
 """
 import sqlite3
 import json
+import re
 import uuid
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 from config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# Words too common to discriminate a conversation search — ANDing them would
+# make "what did we decide about the car" match almost nothing.
+_SEARCH_STOP_WORDS = {
+    "the", "and", "for", "was", "were", "are", "did", "does", "about", "with",
+    "what", "when", "where", "who", "why", "how", "that", "this", "have", "has",
+    "had", "you", "your", "our", "his", "her", "them", "they", "she", "him",
+    "not", "but", "from", "into", "over", "under", "again", "said", "tell",
+    "told", "say", "says", "get", "got", "can", "could", "would", "should",
+}
 
 
 def get_conversation_db_path() -> str:
@@ -468,6 +479,84 @@ class ConversationStore:
             return messages
         finally:
             conn.close()
+
+    def search_messages(
+        self,
+        query: str,
+        limit: int = 20,
+        since_days: Optional[int] = None,
+    ) -> list[dict]:
+        """Search every conversation's messages for a term.
+
+        This is the record of what was actually said to LifeOS, which on a
+        Telegram-first deployment is the primary personal history — there is no
+        mailbox or vault behind it. Without a way to read it back, "what did we
+        decide about X?" is answered from the model's imagination; with it, the
+        answer is quoted.
+
+        SQLite ``LIKE`` rather than FTS on purpose: this table has no FTS index,
+        chat volume is small, and a substring match cannot silently miss a term
+        the way a tokenizer can (the failure mode matters more than the speed
+        here). Terms are ANDed first for precision and ORed as a fallback, so
+        "decide about the car" does not return every message containing "about".
+
+        Returns newest-first dicts: ``conversation_id``, ``title``, ``role``,
+        ``content``, ``created_at``.
+        """
+        text = (query or "").strip()
+        if not text:
+            return []
+
+        terms = [
+            t for t in re.findall(r"[A-Za-z0-9_'\-]+", text)
+            if len(t) >= 3 and t.lower() not in _SEARCH_STOP_WORDS
+        ][:5]
+        if not terms:
+            terms = [t for t in re.findall(r"[A-Za-z0-9_'\-]+", text) if len(t) >= 2][:5]
+        if not terms:
+            return []
+
+        def _run(match_all: bool) -> list[dict]:
+            clauses = []
+            params: list = []
+            if since_days is not None:
+                cutoff = datetime.now() - timedelta(days=max(0, since_days))
+                clauses.append("m.created_at >= ?")
+                params.append(cutoff.strftime("%Y-%m-%d %H:%M:%S"))
+            joiner = " AND " if match_all else " OR "
+            clauses.append("(" + joiner.join("m.content LIKE ?" for _ in terms) + ")")
+            params.extend(f"%{t}%" for t in terms)
+            params.append(limit)
+            conn = self._connect()
+            try:
+                cursor = conn.execute(
+                    f"""
+                    SELECT m.conversation_id, c.title, m.role, m.content, m.created_at
+                    FROM messages m
+                    JOIN conversations c ON c.id = m.conversation_id
+                    WHERE {' AND '.join(clauses)}
+                    ORDER BY m.created_at DESC, m.rowid DESC
+                    LIMIT ?
+                    """,
+                    params,
+                )
+                return [
+                    {
+                        "conversation_id": row[0],
+                        "title": row[1],
+                        "role": row[2],
+                        "content": row[3],
+                        "created_at": row[4],
+                    }
+                    for row in cursor.fetchall()
+                ]
+            finally:
+                conn.close()
+
+        hits = _run(match_all=True)
+        if not hits and len(terms) > 1:
+            hits = _run(match_all=False)
+        return hits
 
     def update_title(self, conv_id: str, title: str) -> bool:
         """

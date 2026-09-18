@@ -937,3 +937,123 @@ class TestAgentSessionReverseLookup:
 
         assert store.get_conversation_id_by_agent_session_id("sess-1") == conv1.id
         assert store.get_conversation_id_by_agent_session_id("sess-2") == conv2.id
+
+
+# =============================================================================
+# Message search (search_messages / the search_conversations tool)
+# =============================================================================
+
+class TestSearchMessages:
+    """The chat transcript is the primary personal record on a Telegram-first
+    deployment, so searching it must be precise, ranked newest-first, and
+    honest about whether a term was ever said."""
+
+    def test_finds_messages_across_conversations(self, store):
+        first = store.create_conversation(title="Car repair")
+        second = store.create_conversation(title="Job hunt")
+        store.add_message(first.id, "user", "the gearbox radiator still needs work")
+        store.add_message(second.id, "assistant", "I noted the arbitrage account")
+
+        hits = store.search_messages("gearbox")
+
+        assert len(hits) == 1
+        assert hits[0]["conversation_id"] == first.id
+        assert hits[0]["title"] == "Car repair"
+        assert hits[0]["role"] == "user"
+
+    def test_returns_empty_for_a_term_never_said(self, store):
+        conversation = store.create_conversation(title="Anything")
+        store.add_message(conversation.id, "user", "hello there")
+        assert store.search_messages("zeppelin") == []
+
+    def test_empty_query_returns_nothing(self, store):
+        conversation = store.create_conversation(title="Anything")
+        store.add_message(conversation.id, "user", "hello there")
+        assert store.search_messages("   ") == []
+
+    def test_terms_are_anded_so_common_words_do_not_match_everything(self, store):
+        conversation = store.create_conversation(title="Mixed")
+        store.add_message(conversation.id, "user", "what about the weather")
+        store.add_message(conversation.id, "user", "we decided on the car repair plan")
+
+        hits = store.search_messages("decided car")
+
+        assert len(hits) == 1
+        assert "car repair plan" in hits[0]["content"]
+
+    def test_falls_back_to_any_term_when_nothing_matches_all(self, store):
+        conversation = store.create_conversation(title="Mixed")
+        store.add_message(conversation.id, "user", "the car needs a new battery")
+
+        hits = store.search_messages("car zeppelin")
+
+        assert len(hits) == 1
+        assert "battery" in hits[0]["content"]
+
+    def test_results_are_newest_first(self, store):
+        conversation = store.create_conversation(title="Ordering")
+        store.add_message(conversation.id, "user", "alpha first")
+        store.add_message(conversation.id, "user", "alpha second")
+
+        hits = store.search_messages("alpha")
+
+        assert [h["content"] for h in hits] == ["alpha second", "alpha first"]
+
+    def test_limit_is_respected(self, store):
+        conversation = store.create_conversation(title="Many")
+        for i in range(10):
+            store.add_message(conversation.id, "user", f"alpha {i}")
+
+        assert len(store.search_messages("alpha", limit=3)) == 3
+
+    def test_since_days_filters_older_messages(self, store, temp_db):
+        conversation = store.create_conversation(title="Old and new")
+        store.add_message(conversation.id, "user", "alpha old")
+        # Backdate the first message beyond the window.
+        conn = sqlite3.connect(temp_db)
+        conn.execute(
+            "UPDATE messages SET created_at = ? WHERE content = 'alpha old'",
+            (datetime(2020, 1, 1, 12, 0, 0),),
+        )
+        conn.commit()
+        conn.close()
+        store.add_message(conversation.id, "user", "alpha new")
+
+        hits = store.search_messages("alpha", since_days=7)
+
+        assert [h["content"] for h in hits] == ["alpha new"]
+
+    def test_tool_renders_hits_and_reports_no_match_honestly(self, store, monkeypatch):
+        import api.services.conversation_store as cs
+        from api.services.agent_tools import _tool_search_conversations
+
+        conversation = store.create_conversation(title="Cafe AI")
+        store.add_message(conversation.id, "user", "Qaf agreed to start Cafe AI with me")
+        monkeypatch.setattr(cs, "get_store", lambda: store)
+
+        rendered = _tool_search_conversations({"query": "Cafe AI"})
+        assert "Cafe AI" in rendered
+        assert "you:" in rendered
+
+        missing = _tool_search_conversations({"query": "zeppelin"})
+        assert "No past conversation messages match" in missing
+
+    def test_tool_requires_a_query(self):
+        from api.services.agent_tools import _tool_search_conversations
+        assert "needs a non-empty query" in _tool_search_conversations({})
+
+
+class TestSearchConversationsToolRegistration:
+    def test_tool_is_registered_and_offered(self):
+        from api.services.agent_tools import (
+            TOOL_DEFINITIONS,
+            TOOL_STATUS_MESSAGES,
+            _SYNC_HANDLERS,
+            _TOOL_HANDLERS,
+        )
+
+        names = {t["name"] for t in TOOL_DEFINITIONS}
+        assert "search_conversations" in names
+        assert "search_conversations" in _TOOL_HANDLERS
+        assert "search_conversations" in _SYNC_HANDLERS
+        assert "search_conversations" in TOOL_STATUS_MESSAGES

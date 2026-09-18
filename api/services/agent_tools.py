@@ -1021,6 +1021,40 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "search_conversations",
+        "description": (
+            "Search the actual messages exchanged with LifeOS in past conversations. "
+            f"Use this for {_user}'s own history of what he has told you or asked "
+            "about — decisions, updates, plans, and follow-ups discussed here — when "
+            "the answer is not a saved memory. This is NOT the email/message tools "
+            "(search_email, get_message_history) and NOT the distilled memory store "
+            "(search_memories): it reads the literal chat transcript, so prefer it "
+            "for 'what did we discuss/decide about X?'. Never claim a past "
+            "conversation said something without checking here first."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keywords to match against past messages.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max messages to return (default 20, cap 100).",
+                },
+                "since_days": {
+                    "type": "integer",
+                    "description": (
+                        "Only return messages from the last N days. Omit to search "
+                        "all history."
+                    ),
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "manage_workouts",
         "description": (
             "Log and query the user's workout log and fitness metrics (the fitness "
@@ -1137,7 +1171,7 @@ async def execute_tool(name: str, tool_input: dict) -> str:
 
 
 # Sync handlers to wrap in to_thread for parallel execution
-_SYNC_HANDLERS = {"search_vault", "read_vault_file", "search_slack", "get_message_history", "person_info", "manage_tasks", "manage_reminders", "manage_schedules", "manage_projects", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "search_memories"}
+_SYNC_HANDLERS = {"search_vault", "read_vault_file", "search_slack", "get_message_history", "person_info", "manage_tasks", "manage_reminders", "manage_schedules", "manage_projects", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "search_memories", "search_conversations"}
 
 
 async def execute_tool_parallel(name: str, tool_input: dict) -> str:
@@ -3663,6 +3697,42 @@ _MEMORY_LIMIT_DEFAULT = 10
 _MEMORY_LIMIT_MAX = 200
 
 
+def _tool_search_conversations(inp: dict) -> str:
+    """Search the actual back-and-forth history with LifeOS.
+
+    Distinct from ``search_memories`` (durable facts distilled from
+    conversations) and from ``get_message_history`` (iMessage/WhatsApp logs):
+    this reads what was literally said in past LifeOS chats, which is the
+    primary personal record on a Telegram-first deployment.
+    """
+    from api.services.conversation_store import get_store
+
+    query = (inp.get("query") or "").strip()
+    if not query:
+        return "search_conversations needs a non-empty query."
+    limit = _positive_int(inp.get("limit", 20), 20, 100)
+    since_days = inp.get("since_days")
+    if since_days is not None:
+        since_days = _positive_int(since_days, 0, 3650) or None
+
+    hits = get_store().search_messages(query, limit=limit, since_days=since_days)
+    if not hits:
+        return (
+            f"No past conversation messages match {query!r}. This searched the "
+            "actual chat history with LifeOS; it does not mean the topic was "
+            "never discussed outside these conversations."
+        )
+
+    lines = [f'{len(hits)} matching message(s), newest first:']
+    for hit in hits:
+        when = str(hit.get("created_at") or "")[:19].replace("T", " ")
+        role = "you" if hit.get("role") == "user" else "assistant"
+        title = (hit.get("title") or "conversation").strip()
+        content = re.sub(r"\s+", " ", str(hit.get("content") or "")).strip()
+        lines.append(f"- [{when}] ({title}) {role}: {content[:600]}")
+    return "\n".join(lines)
+
+
 def _tool_search_memories(inp: dict) -> str:
     from api.services.memory_store import get_memory_store
 
@@ -4650,6 +4720,7 @@ _TOOL_HANDLERS = {
     "list_inbox_proposals": _tool_list_inbox_proposals,
     "confirm_inbox_proposal": _tool_confirm_inbox_proposal,
     "search_memories": _tool_search_memories,
+    "search_conversations": _tool_search_conversations,
 }
 
 # Status messages for UI feedback when tools execute
@@ -4711,4 +4782,5 @@ TOOL_STATUS_MESSAGES = {
     "list_inbox_proposals": "Loading pending Life Inbox proposals...",
     "confirm_inbox_proposal": "Confirming Life Inbox proposal...",
     "search_memories": "Searching memories...",
+    "search_conversations": "Searching past conversations...",
 }

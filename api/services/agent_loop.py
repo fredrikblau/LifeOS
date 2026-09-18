@@ -72,7 +72,19 @@ def _looks_like_giving_up(text: str) -> bool:
 # turn is caught; a turn that makes a READ call and then claims a write still
 # passes — that variant hasn't been observed and distinguishing reads from
 # writes here isn't worth the tool-registry coupling yet.
-_WRITE_CLAIM_PATTERN = re.compile(r"(?i)^\s*(logged|updated|recorded|saved)\b")
+#
+# The verb list covers every confirmation the system prompt itself calls out as
+# a factual claim ("saved", "noted", "added", "created", "reminder set", "all
+# set"). It stays anchored to the start and ahead of any subject, so an ordinary
+# answer that merely mentions a past action ("You logged 3 sessions last week",
+# "No sessions logged") never matches.
+_WRITE_CLAIM_PATTERN = re.compile(
+    r"(?i)^\s*"
+    r"(?:(?:ok(?:ay)?|got it|sure|great|perfect|nice)[,!.\s]+)?"
+    r"(?:i(?:'ve|\s+have)?\s+(?:just\s+)?)?"
+    r"(logged|updated|recorded|saved|noted|added|created|marked|"
+    r"reminder set|all set)\b"
+)
 
 PHANTOM_WRITE_NUDGE = (
     "Stop — you replied as if something was recorded, but you made NO tool call "
@@ -88,6 +100,44 @@ PHANTOM_WRITE_NUDGE = (
 def _claims_write_without_tools(text: str) -> bool:
     """Reply asserts a write ('Logged …') — only meaningful when no tools ran."""
     return bool(_WRITE_CLAIM_PATTERN.match(text))
+
+
+# Grounding guard: the most damaging failure on a personal assistant is a
+# confident answer about the operator's OWN life, records, or people that was
+# never looked up. Memories are auto-injected and the tools are right there, so
+# a personal-data question answered with ZERO tool calls in round 1 is far more
+# often invention than recall. This nudge makes the model actually look before
+# it answers, once per turn, and lets it answer normally the second time.
+#
+# Deliberately scoped to queries that name the operator or a lookupable source —
+# general knowledge, coding help, and math must keep flowing straight through.
+_PERSONAL_QUERY_RE = re.compile(
+    r"(?i)\b("
+    r"my\b|our\b|did i\b|have i\b|do i\b|am i\b|can i\b|should i\b|"
+    r"what did i|when did i|who did i|where did i|"
+    r"remind(?:er|ers)?\b|tasks?\b|commitments?\b|projects?\b|memor(?:y|ies)\b|"
+    r"calendars?\b|emails?\b|gmail|messages?\b|imessages?\b|whatsapp|slack|"
+    r"vault|journals?\b|notes?\b|"
+    r"transactions?\b|budget|portfoli|investments?\b|holdings|spen[dt]\b|"
+    r"workouts?\b|sleep|hrv|weight"
+    r")"
+)
+
+PERSONAL_GROUNDING_NUDGE = (
+    "Stop — this question is about the operator's own life, records, or people, "
+    "but you answered without calling a single tool. Do not invent an answer from "
+    "your general knowledge or from what you assume is in the prompt. Call the "
+    "appropriate tool(s) now — for example search_memories, life_review, "
+    "manage_tasks, manage_reminders, manage_commitments, or the source-specific "
+    "search tools — then answer only from what they actually return. If the tools "
+    "needed are unavailable, say plainly which source isn't set up yet instead of "
+    "guessing."
+)
+
+
+def _looks_like_personal_query(question: str) -> bool:
+    """True when the question asks about the operator's own data or people."""
+    return bool(_PERSONAL_QUERY_RE.search(question or ""))
 
 
 # Cross-turn escalation (#303). A weak orchestrator sometimes declares something
@@ -630,6 +680,10 @@ async def run_agent_loop(
     # terminal `result` event because the loop was cancelled mid-round.
     yield {"type": "turn_state", "result": result}
     phantom_write_nudged = False  # phantom-write self-correction fires at most once per turn
+    # Grounding guard fires at most once per turn, and only for personal-data
+    # queries — see _looks_like_personal_query.
+    personal_grounding_nudged = False
+    _personal_query = _looks_like_personal_query(question)
 
     def _track_usage(usage: LLMUsage):
         result.total_input_tokens += usage.input_tokens
@@ -810,6 +864,22 @@ async def run_agent_loop(
                 result.full_text = ""
                 messages.append({"role": "assistant", "content": assistant_content})
                 messages.append({"role": "user", "content": PHANTOM_WRITE_NUDGE})
+                continue
+            if (
+                not personal_grounding_nudged
+                and round_num == 1
+                and not result.tool_calls_log
+                and text_this_round.strip()
+                and _personal_query
+            ):
+                # A personal-data question answered with no lookups. Force one
+                # evidence-gathering round rather than stream an invented answer.
+                personal_grounding_nudged = True
+                print("[agent] Self-correction triggered: personal query answered without tools")
+                yield {"type": "self_correction"}
+                result.full_text = ""
+                messages.append({"role": "assistant", "content": assistant_content})
+                messages.append({"role": "user", "content": PERSONAL_GROUNDING_NUDGE})
                 continue
             break
 

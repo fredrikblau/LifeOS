@@ -162,6 +162,29 @@ STATIC_TEXT = STATIC_TEXT.replace(
     "confirm with details. If the tool failed or you did not call it, say so instead.",
 )
 
+# Conversation-history search. On a Telegram-first deployment the LifeOS chat
+# transcript IS the personal record, and there was no tool to read it back — so
+# "what did we decide about X?" was answered from the model's imagination.
+STATIC_TEXT = STATIC_TEXT.replace(
+    "**search_memories:**\nSearches saved memories",
+    "**search_conversations:**\n"
+    "Searches the literal messages from past conversations with Test User. Use this for\n"
+    "\"what did we discuss/decide about X?\", \"what did I tell you about Y?\", or any\n"
+    "question about the history of this assistant's own chats. It reads the actual\n"
+    "transcript, so never assert that a past conversation said something without\n"
+    "checking it first. Distinct from **search_memories** (distilled durable facts)\n"
+    "and **get_message_history** (iMessage/WhatsApp with a specific person).\n\n"
+    "**search_memories:**\nSearches saved memories",
+)
+STATIC_TEXT = STATIC_TEXT.replace(
+    "- **Any query mentioning a person**",
+    "- **\"What did we discuss/decide about X?\"**, \"what did I tell you about Y?\", "
+    "or any question about this assistant's own chat history: use "
+    "search_conversations — it reads the literal transcript. Never answer from "
+    "memory which conversation said what.\n"
+    "- **Any query mentioning a person**",
+)
+
 WITH_PERSONA_TAIL = [{'text': 'FITNESS-PERSONA-MARKER: you are the fitness bot.', 'type': 'text'},
  {'text': 'Current date/time: Wednesday, August 19, 2026 at 09:14 AM EDT\n'
           'Timezone: America/New_York\n'

@@ -115,21 +115,64 @@ async def test_phantom_nudge_fires_at_most_once():
     assert any(e["type"] == "text" for e in events)
 
 
+class _Plain:
+    """Answers with fixed text and no tool calls; records every call's messages."""
+
+    def __init__(self, text: str = "Your last squat session was 6/13."):
+        self.calls: list[list] = []
+        self._text = text
+
+    async def astream(self, messages, *, system=None, max_tokens=4096,
+                      tools=None, temperature=None, timeout=None):
+        from api.services.llm_client import LLMUsage
+        self.calls.append(list(messages))
+        yield {"type": "text", "content": self._text}
+        yield {"type": "done", "usage": LLMUsage(), "finish_reason": "end_turn"}
+
+
 @pytest.mark.asyncio
 async def test_normal_answer_without_tools_is_untouched():
-    """A plain informational answer with no tools must not trigger the nudge."""
-    class _Plain:
-        def __init__(self):
-            self.calls = 0
-
-        async def astream(self, messages, *, system=None, max_tokens=4096,
-                          tools=None, temperature=None, timeout=None):
-            from api.services.llm_client import LLMUsage
-            self.calls += 1
-            yield {"type": "text", "content": "Your last squat session was 6/13."}
-            yield {"type": "done", "usage": LLMUsage(), "finish_reason": "end_turn"}
-
-    fake = _Plain()
-    events = await _run(fake, question="when did I last squat?")
-    assert fake.calls == 1
+    """General-knowledge answers with no tools must not trigger the nudge."""
+    fake = _Plain("Mars is the fourth planet from the Sun.")
+    events = await _run(fake, question="what is the fourth planet?")
+    assert len(fake.calls) == 1
     assert not any(e["type"] == "self_correction" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_personal_query_without_tools_is_nudged_to_ground():
+    """A question about the operator's own records answered with no lookups is
+    pushed to gather evidence instead of being streamed as-is."""
+    from api.services.agent_loop import PERSONAL_GROUNDING_NUDGE
+    fake = _Plain("You last squatted on 6/13.")
+    events = await _run(fake, question="when did I last squat?")
+    assert len(fake.calls) == 2
+    assert any(e["type"] == "self_correction" for e in events)
+    assert any(
+        m.get("content") == PERSONAL_GROUNDING_NUDGE
+        for m in fake.calls[1]
+        if isinstance(m, dict) and m.get("role") == "user"
+    )
+
+
+class TestPersonalQueryDetection:
+    def test_personal_queries_match(self):
+        from api.services.agent_loop import _looks_like_personal_query
+        for q in (
+            "what should I do today?",
+            "when did I last talk to Sarah?",
+            "what are my reminders?",
+            "remind me to call the dentist",
+            "how much did I spend on groceries?",
+        ):
+            assert _looks_like_personal_query(q), q
+
+    def test_general_queries_do_not_match(self):
+        from api.services.agent_loop import _looks_like_personal_query
+        for q in (
+            "what is the fourth planet?",
+            "write a haiku about race conditions",
+            "what is 2 + 2?",
+            "explain quicksort",
+        ):
+            assert not _looks_like_personal_query(q), q

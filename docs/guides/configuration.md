@@ -91,14 +91,21 @@ DEEPSEEK_API_KEY=sk-...
 
 | Variable | Type | Default | Sets |
 |---|---|---|---|
-| `LIFEOS_LLM_PROVIDER` | str | — | One of `anthropic`, `openai`, `deepseek`, `gemini`, `openrouter`, `groq`, `mistral`, `local`. Points every model profile at that provider. |
+| `LIFEOS_LLM_PROVIDER` | str | — | One of `anthropic`, `openai`, `deepseek`, `gemini`, `openrouter`, `groq`, `mistral`, `commandcode`, `local`. Points every model profile at that provider. |
 | `LIFEOS_LLM_DEFAULT_MODEL` | str | preset's choice | Model id for the `default` and `specialist` profiles. |
 | `LIFEOS_LLM_FAST_MODEL` | str | preset's choice | Model id for the cheap `fast` profile — classification, extraction, summarization. |
 | `LIFEOS_LLM_REASONING_MODEL` | str | preset's choice | Model id for the `reasoning` profile — planning, relationship analysis. |
 
+One preset is a gateway rather than a single vendor: `commandcode` points at
+the Command Code Provider API (`https://api.commandcode.ai/provider`), which
+serves every top model behind one OpenAI-compatible endpoint. Its key is read
+from `COMMANDCODE_API_KEY`, falling back to `COMMAND_CODE_API_KEY` or the
+CLI's `CMD_API_KEY`; the shipped model is `deepseek/deepseek-v4.1-flash`.
+
 Each preset knows its own endpoint, which environment variable holds its key
 (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`,
-`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`), and a starting model
+`OPENROUTER_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`, `COMMANDCODE_API_KEY`),
+and a starting model
 for each profile. The model ids are starting points — override any of them with
 the variables above without giving up the preset. A provider name that isn't in
 the list is logged as an error and ignored, so a typo can't take the assistant

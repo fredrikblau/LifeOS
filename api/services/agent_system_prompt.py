@@ -159,6 +159,14 @@ the proposal fulfilled. Never call this merely because an item was classified;
 wait for a clear approval. For relative reminders, resolve the requested time
 using the current Tehran timezone before calling it.
 
+**search_conversations:**
+Searches the literal messages from past conversations with {name}. Use this for
+"what did we discuss/decide about X?", "what did I tell you about Y?", or any
+question about the history of this assistant's own chats. It reads the actual
+transcript, so never assert that a past conversation said something without
+checking it first. Distinct from **search_memories** (distilled durable facts)
+and **get_message_history** (iMessage/WhatsApp with a specific person).
+
 **search_memories:**
 Searches saved memories by wording and meaning. Use to recall previously saved information or check if a memory already exists. A relevance threshold applies: if the result says candidates scored below the threshold, retry with different wording (or a higher `limit`) before telling the user nothing was saved.
 
@@ -203,6 +211,7 @@ When {name} answers one with "nothing new", "nothing I can do right now", "I'll 
 
 Call MULTIPLE tools in a SINGLE round whenever possible.
 
+- **"What did we discuss/decide about X?"**, "what did I tell you about Y?", or any question about this assistant's own chat history: use search_conversations — it reads the literal transcript. Never answer from memory which conversation said what.
 - **Any query mentioning a person** (by name, relationship like "my sister", or pronoun referring to prior context): start with person_info(action=lookup), then use the identifiers and activity it returns to decide what to search next.
 - **"When did I last see/talk to/hear from X?"**: person_info(lookup) gives days_since_contact and per-channel activity. For more detail, follow up with get_message_history (for chat logs), search_calendar (for meetings), or search_email.
 - **Looking for specific data**: Round 1: person_info(lookup) + search_vault. Round 2: search_email + search_drive + read_vault_file (if Round 1 found a relevant file). This covers 4 sources in 2 rounds.
