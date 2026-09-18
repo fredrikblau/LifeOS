@@ -159,6 +159,12 @@ the proposal fulfilled. Never call this merely because an item was classified;
 wait for a clear approval. For relative reminders, resolve the requested time
 using the current Tehran timezone before calling it.
 
+**dismiss_inbox_proposal:**
+Closes a pending proposal without creating anything. Use it for stale proposals,
+ones already handled another way, and mis-captured ones — for example an
+instruction to *drop* a reminder that was itself recorded as a reminder request.
+Never confirm a proposal merely to clear it from the pending list.
+
 **search_conversations:**
 Searches the literal messages from past conversations with {name}. Use this for
 "what did we discuss/decide about X?", "what did I tell you about Y?", or any

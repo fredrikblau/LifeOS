@@ -510,3 +510,60 @@ def test_no_pending_proposals_reports_none(tmp_path, monkeypatch):
     )
 
     assert "no pending Life Inbox proposals" in _tool_list_inbox_proposals({"since_days": 3650})
+
+
+def test_dismiss_inbox_proposal_closes_without_creating(tmp_path, monkeypatch):
+    """Declining a proposal must close it and create nothing."""
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.services.agent_tools import (
+        _tool_dismiss_inbox_proposal,
+        _tool_list_inbox_proposals,
+    )
+
+    item = inbox_store.add_item("dissmiss the stale reminder. only remember i have to source the tie rod later")
+    inbox_store.update_item(
+        item["id"], status="processed", category="reminder",
+        proposal={"type": "reminder", "content": "dissmiss the stale reminder", "requires_confirmation": True},
+    )
+
+    result = _tool_dismiss_inbox_proposal({"proposal_id": item["id"], "reason": "mis-captured instruction"})
+
+    assert "withdrawn" in result
+    assert "nothing was created" in result
+    assert item["id"] not in _tool_list_inbox_proposals({"since_days": 3650})
+    # Idempotent: a second decline is refused, not duplicated.
+    assert "already withdrawn" in _tool_dismiss_inbox_proposal({"proposal_id": item["id"]})
+
+
+def test_dismiss_refuses_an_already_confirmed_proposal(tmp_path, monkeypatch):
+    monkeypatch.setenv("LIFEOS_INBOX_PATH", str(tmp_path / "inbox.json"))
+    from api.services.agent_tools import _tool_dismiss_inbox_proposal
+
+    item = inbox_store.add_item("Remind me to call John")
+    inbox_store.update_item(
+        item["id"], status="processed", category="reminder",
+        proposal={"type": "reminder", "content": "Call John", "requires_confirmation": True,
+                  "confirmed_at": "2026-09-01T00:00:00+00:00",
+                  "confirmed_result": 'Schedule created: "Call John"'},
+    )
+
+    result = _tool_dismiss_inbox_proposal({"proposal_id": item["id"]})
+
+    assert "already confirmed" in result
+
+
+def test_dismiss_requires_a_proposal_id():
+    from api.services.agent_tools import _tool_dismiss_inbox_proposal
+    assert "proposal_id is required" in _tool_dismiss_inbox_proposal({})
+
+
+def test_proposal_tools_are_registered():
+    from api.services.agent_tools import (
+        TOOL_DEFINITIONS, TOOL_STATUS_MESSAGES, _SYNC_HANDLERS, _TOOL_HANDLERS,
+    )
+    names = {t["name"] for t in TOOL_DEFINITIONS}
+    for tool in ("list_inbox_proposals", "confirm_inbox_proposal", "dismiss_inbox_proposal"):
+        assert tool in names
+        assert tool in _TOOL_HANDLERS
+        assert tool in TOOL_STATUS_MESSAGES
+    assert "dismiss_inbox_proposal" in _SYNC_HANDLERS

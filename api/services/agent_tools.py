@@ -993,6 +993,25 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "dismiss_inbox_proposal",
+        "description": (
+            "Close a pending Life Inbox proposal WITHOUT creating anything from it. "
+            "Use when a proposal is stale, was already handled another way, or was "
+            "mis-captured (for example an instruction to *drop* a reminder that was "
+            "itself recorded as a reminder request). Declining is the correct outcome "
+            "for those — do not confirm a proposal just to clear it. Nothing is "
+            "created and the proposal stops appearing as pending."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "proposal_id": {"type": "string", "description": "Inbox item id from list_inbox_proposals."},
+                "reason": {"type": "string", "description": "Short reason, e.g. 'stale' or 'already handled'."},
+            },
+            "required": ["proposal_id"],
+        },
+    },
+    {
         "name": "search_memories",
         "description": (
             "Search saved memories by wording and meaning. Use to recall previously saved "
@@ -1171,7 +1190,7 @@ async def execute_tool(name: str, tool_input: dict) -> str:
 
 
 # Sync handlers to wrap in to_thread for parallel execution
-_SYNC_HANDLERS = {"search_vault", "read_vault_file", "search_slack", "get_message_history", "person_info", "manage_tasks", "manage_reminders", "manage_schedules", "manage_projects", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "search_memories", "search_conversations"}
+_SYNC_HANDLERS = {"search_vault", "read_vault_file", "search_slack", "get_message_history", "person_info", "manage_tasks", "manage_reminders", "manage_schedules", "manage_projects", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "search_memories", "search_conversations", "list_inbox_proposals", "confirm_inbox_proposal", "dismiss_inbox_proposal"}
 
 
 async def execute_tool_parallel(name: str, tool_input: dict) -> str:
@@ -3632,7 +3651,9 @@ def _tool_list_inbox_proposals(inp: dict) -> str:
     # second confirmation; the lister just never consulted it.)
     items = [
         item for item in list_items(status="processed", limit=1000, since_days=since_days)
-        if isinstance(item.get("proposal"), dict) and not item["proposal"].get("confirmed_at")
+        if isinstance(item.get("proposal"), dict)
+        and not item["proposal"].get("confirmed_at")
+        and not item["proposal"].get("withdrawn_at")
     ][:limit]
     if not items:
         return f"There are no pending Life Inbox proposals from the last {since_days} days."
@@ -3644,6 +3665,43 @@ def _tool_list_inbox_proposals(inp: dict) -> str:
             f"[{item.get('created_at', '')[:10]}] {proposal.get('content', item.get('content', ''))}"
         )
     return "\n".join(lines)
+
+
+def _tool_dismiss_inbox_proposal(inp: dict) -> str:
+    """Close a proposal without creating anything from it.
+
+    Without this the pending list could only ever grow: every proposal was
+    either confirmed into a task/reminder or sat forever. Two of the live
+    proposals were the operator's own instructions to *drop* a stale reminder,
+    which had been captured as reminder requests — confirming them would create
+    exactly the reminder he asked to remove. Declining is a first-class outcome.
+    """
+    from datetime import datetime, timezone
+    from api.services.inbox_store import list_items, update_item
+
+    proposal_id = str(inp.get("proposal_id", "")).strip()
+    if not proposal_id:
+        return "Error: proposal_id is required."
+    item = next(
+        (candidate for candidate in list_items(status="processed", limit=1000)
+         if candidate.get("id") == proposal_id and isinstance(candidate.get("proposal"), dict)),
+        None,
+    )
+    if not item:
+        return f"Error: proposal {proposal_id!r} was not found."
+    proposal = dict(item["proposal"])
+    if proposal.get("confirmed_at"):
+        return f"Proposal {proposal_id} was already confirmed: {proposal.get('confirmed_result', '')}."
+    if proposal.get("withdrawn_at"):
+        return f"Proposal {proposal_id} was already withdrawn."
+    reason = str(inp.get("reason", "") or "").strip() or "declined"
+    proposal["withdrawn_at"] = datetime.now(timezone.utc).isoformat()
+    proposal["withdrawn_reason"] = reason
+    update_item(
+        item["id"], status="processed", category=item.get("category", ""),
+        linked_id=item.get("linked_id", ""), proposal=proposal,
+    )
+    return f"Proposal {proposal_id} withdrawn ({reason}); nothing was created."
 
 
 def _tool_confirm_inbox_proposal(inp: dict) -> str:
@@ -4725,6 +4783,7 @@ _TOOL_HANDLERS = {
     "process_inbox_items": _tool_process_inbox_items,
     "list_inbox_proposals": _tool_list_inbox_proposals,
     "confirm_inbox_proposal": _tool_confirm_inbox_proposal,
+    "dismiss_inbox_proposal": _tool_dismiss_inbox_proposal,
     "search_memories": _tool_search_memories,
     "search_conversations": _tool_search_conversations,
 }
@@ -4787,6 +4846,7 @@ TOOL_STATUS_MESSAGES = {
     "process_inbox_items": "Processing Life Inbox items...",
     "list_inbox_proposals": "Loading pending Life Inbox proposals...",
     "confirm_inbox_proposal": "Confirming Life Inbox proposal...",
+    "dismiss_inbox_proposal": "Closing Life Inbox proposal...",
     "search_memories": "Searching memories...",
     "search_conversations": "Searching past conversations...",
 }

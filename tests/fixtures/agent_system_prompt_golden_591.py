@@ -176,6 +176,19 @@ STATIC_TEXT = STATIC_TEXT.replace(
     "and **get_message_history** (iMessage/WhatsApp with a specific person).\n\n"
     "**search_memories:**\nSearches saved memories",
 )
+# Declining a proposal. The pending list could only ever grow: a proposal was
+# either confirmed or sat forever, and two live ones were the operator's own
+# instructions to *drop* a stale reminder, captured as reminder requests.
+STATIC_TEXT = STATIC_TEXT.replace(
+    "using the current Tehran timezone before calling it.\n\n**search_conversations:**",
+    "using the current Tehran timezone before calling it.\n\n"
+    "**dismiss_inbox_proposal:**\n"
+    "Closes a pending proposal without creating anything. Use it for stale proposals,\n"
+    "ones already handled another way, and mis-captured ones — for example an\n"
+    "instruction to *drop* a reminder that was itself recorded as a reminder request.\n"
+    "Never confirm a proposal merely to clear it from the pending list.\n\n"
+    "**search_conversations:**",
+)
 STATIC_TEXT = STATIC_TEXT.replace(
     "- **Any query mentioning a person**",
     "- **\"What did we discuss/decide about X?\"**, \"what did I tell you about Y?\", "
